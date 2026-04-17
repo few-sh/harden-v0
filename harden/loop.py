@@ -2,13 +2,17 @@
 
 Two orthogonal mode flags:
   * `cfg.oracle`           — pre-check dispatch (deterministic vs agent solver)
-  * `cfg.kernelbench_mode` — prompt/template bundle (KB framing vs generic)
+  * `cfg.kernelbench_mode` — prompt/template bundle + metric semantics
+                             (KB: speedup / `eval_kernel.py`; generic: reward /
+                             `test_outputs.py`)
 
 `_run_solver` routes on `cfg.oracle`:
-  * True  — `run_oracle_solver` (deterministic, speedup >= solver_threshold)
-  * False — `run_solver_agent` (terminus-2, reward >= solver_threshold)
+  * True  — `run_oracle_solver` (deterministic reference copy)
+  * False — `run_solver_agent` (Terminus-2 agent solver)
 
-Hack success is gated on `cfg.hack_threshold` (reward/speedup depending on metric).
+The threshold values (`cfg.hack_threshold`, `cfg.solver_threshold`) are
+compared against whatever the verifier returns; the *name* of that metric
+(speedup vs reward) follows `cfg.kernelbench_mode`, not `cfg.oracle`.
 """
 
 import json

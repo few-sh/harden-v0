@@ -53,7 +53,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--hacker-model", default="gemini/gemini-3.1-pro-preview")
     parser.add_argument("--fixer-model", default="gemini/gemini-3.1-pro-preview")
     parser.add_argument("--solver-model", default="gemini/gemini-3.1-pro-preview",
-                        help="Solver model (solver mode only; ignored when oracle is on)")
+                        help="Agent-solver model (used when --oracle is off; ignored when on)")
 
     # Thresholds (defaults suit reward-based tasks; KB overrides to 10 / 0.5)
     parser.add_argument("--hack-threshold", type=float, default=1.0,
@@ -64,7 +64,8 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-iterations", type=int, default=10)
     parser.add_argument("--hacker-retries", type=int, default=3)
     parser.add_argument("--solver-precheck-retries", type=int, default=1,
-                        help="Pre-check retries (solver mode only; oracle is deterministic)")
+                        help="Pre-check retries (only meaningful when --oracle is off; "
+                             "the deterministic oracle doesn't need retries)")
     parser.add_argument("--legitimate-threshold", type=int, default=3)
     parser.add_argument("--no-legitimate-marker", dest="legitimate_marker",
                         action="store_false", default=True,

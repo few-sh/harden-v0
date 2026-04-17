@@ -59,14 +59,16 @@ class HardenConfig:
     reasoning_effort: str | None = None   # None => default "high"
     hacker_feedback: bool = False
 
-    # Solver-mode only (used when oracle=False)
+    # Agent-solver-only knobs (ignored when cfg.oracle=True, i.e. deterministic pre-check)
     solver_model: str = DEFAULT_MODEL
     solver_max_turns: int | None = None
     solver_precheck_retries: int = 1
     solver_timeout_multiplier: float = 2.0
+    solver_privileged: bool = False
+
+    # Apply regardless of pre-check dispatch
     hacker_timeout_multiplier: float = 2.0
     fixer_timeout_multiplier: float = 10.0
-    solver_privileged: bool = False
     hacker_privileged: bool = False
 
     # Targeted replay (post-solver gate): re-run hacker constrained to reproduce the
