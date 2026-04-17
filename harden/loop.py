@@ -21,6 +21,7 @@ from .agent import (
 from .config import HardenConfig
 from .instructions import (
     HACKER_FEEDBACK_HINT,
+    HACKER_PRIVILEGED_HINT,
     SOLVER_HINT,
     build_fixer_instruction,
     build_hacker_instruction,
@@ -33,6 +34,7 @@ from .workspace import (
     extract_fixer_artifacts,
     prepare_fixer_environment,
     prepare_hacker_environment,
+    prepare_privileged_hacker_environment,
     prepare_solver_environment,
     replace_instruction,
     update_hardened,
@@ -170,12 +172,19 @@ async def harden_task(config: HardenConfig) -> dict:
                 hacker_instruction = build_hacker_instruction(original_instruction, oracle=config.oracle)
                 replace_instruction(hacker_parent, config.task_id, hacker_instruction)
 
+                hacker_privileged_modified = False
+                if config.hacker_privileged:
+                    if prepare_privileged_hacker_environment(hacker_parent, config.task_id):
+                        append_to_instruction(hacker_parent, config.task_id, HACKER_PRIVILEGED_HINT)
+                        hacker_privileged_modified = True
+
                 all_failed = failed_hack_trials + attempt_failed_trials
-                hacker_dockerfile_modified = (config.hacker_feedback and bool(all_failed))
-                if hacker_dockerfile_modified:
+                hacker_feedback_modified = (config.hacker_feedback and bool(all_failed))
+                if hacker_feedback_modified:
                     prepare_hacker_environment(hacker_parent, config.task_id, all_failed)
                     append_to_instruction(hacker_parent, config.task_id, HACKER_FEEDBACK_HINT)
 
+                hacker_dockerfile_modified = hacker_privileged_modified or hacker_feedback_modified
                 hacker_needs_rebuild = hacker_dockerfile_modified or hardened_dirty
                 hack_reward, hacker_trial = await run_hacker(
                     hacker_parent,

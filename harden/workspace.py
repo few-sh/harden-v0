@@ -142,6 +142,54 @@ def prepare_hacker_environment(
     dockerfile.write_text(content)
 
 
+def prepare_privileged_hacker_environment(
+    hacker_parent: Path,
+    task_id: str,
+) -> bool:
+    """Inject evaluation files (tests/, environment/) into hacker's Docker image at /eval_env/ (read-only).
+
+    Returns True if mounted, False if nothing to mount.
+    """
+    task_dir = hacker_parent / task_id
+    env_dir = task_dir / "environment"
+    dockerfile = env_dir / "Dockerfile"
+
+    if not dockerfile.exists():
+        return False
+
+    tests_src = task_dir / "tests"
+    if not tests_src.is_dir():
+        logger.warning("No tests/ in %s — skipping privileged hacker setup", task_dir)
+        return False
+
+    eval_env_dir = env_dir / "eval_env"
+    if eval_env_dir.exists():
+        shutil.rmtree(eval_env_dir)
+    eval_env_dir.mkdir()
+
+    shutil.copytree(tests_src, eval_env_dir / "tests")
+
+    env_copy = eval_env_dir / "environment"
+    env_copy.mkdir()
+    for item in env_dir.iterdir():
+        if item.name == "eval_env":
+            continue
+        dest = env_copy / item.name
+        if item.is_dir():
+            shutil.copytree(item, dest)
+        else:
+            shutil.copy2(item, dest)
+
+    content = dockerfile.read_text()
+    content += (
+        "\n# Added by harden: mount evaluation environment for privileged hacker\n"
+        "COPY eval_env/ /eval_env/\n"
+        "RUN chmod -R a-w /eval_env/\n"
+    )
+    dockerfile.write_text(content)
+    return True
+
+
 def prepare_fixer_environment(
     working_copy_parent: Path,
     task_id: str,
@@ -191,7 +239,7 @@ def prepare_fixer_environment(
     for item in env_dir.iterdir():
         if item.name in ("tests", "solution", "environment_copy",
                          "previous_attempt", "previous_solver",
-                         "previous_hacks",
+                         "previous_hacks", "eval_env",
                          "harden-entrypoint.sh"):
             continue
         dest = environment_copy_dir / item.name

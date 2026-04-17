@@ -85,6 +85,9 @@ def _build_parser() -> argparse.ArgumentParser:
                         help="Inject /solution/ into the solver's env (solver mode only)")
     parser.add_argument("--hacker-feedback", action="store_true",
                         help="Give hacker read-only access to previous failed attempts")
+    parser.add_argument("--hacker-privileged", action="store_true",
+                        help="Give hacker read-only access to the evaluation environment "
+                             "(tests/, environment/) at /eval_env/")
 
     # Harbor knobs
     parser.add_argument("-c", "--harbor-config", type=Path, default=None,
@@ -134,6 +137,7 @@ def _config_kwargs(args: argparse.Namespace) -> dict:
         reasoning_effort=args.reasoning_effort,
         solver_privileged=args.solver_privileged,
         hacker_feedback=args.hacker_feedback,
+        hacker_privileged=args.hacker_privileged,
         harbor_config=args.harbor_config,
         force_build=args.force_build,
         image_name=args.image_name,

@@ -52,6 +52,7 @@ class HardenConfig:
     hacker_timeout_multiplier: float = 2.0
     fixer_timeout_multiplier: float = 10.0
     solver_privileged: bool = False
+    hacker_privileged: bool = False
 
     # Harbor knobs (solver mode: Dockerfile mutates across iterations; both modes can override image)
     harbor_config: Path | None = None
