@@ -6,6 +6,7 @@ agents (Terminus-2 via Harbor) play adversarial roles:
 1. **Hacker** — runs with an aggressive exploit prompt, explicitly told to bypass tests.
 2. **Fixer** — given the hack trajectory, modifies any task file to block the exploit.
 3. **Solver / Oracle** — pre-check and post-fix validation (validates task is solvable & fix doesn't break it).
+4. **Targeted replay** (optional, `--replay-enabled`) — after solver accepts the fix, re-runs a constrained hacker on the patched task with the prior exploit as a replay target. If it re-lands, the fix is rejected.
 
 ## Two modes (selected by `oracle: bool`)
 
@@ -34,6 +35,7 @@ For each iteration (up to `max_iterations`, default 10):
    - On retry: previous attempt + solver output mounted read-only.
    - Can mark hack as legitimate via `.legitimate` sentinel (enabled by default; `--no-legitimate-marker` to disable).
 3. **Validate**: solver/oracle must still pass. If not, revert; feedback sent to fixer next iteration.
+4. **Targeted replay** (if `--replay-enabled`): up to `replay_retries` attempts to reproduce the prior exploit on the patched task. If reward ≥ `hack_threshold`, the fix is rejected (outcome `replay_broke_fix`) and feedback goes to the next fixer turn. Hardened state is only committed when both solver **and** replay agree.
 
 ## Module layout
 
@@ -44,7 +46,7 @@ harden-unified/
     config.py         # HardenConfig / BatchHardenConfig
     loop.py           # harden_task + _run_solver dispatch
     agent.py          # run_hacker / run_oracle_solver / run_solver_agent / run_fixer
-    instructions.py   # build_hacker_instruction + FIXER templates per mode + SOLVER_HINT
+    instructions.py   # build_hacker_instruction + build_targeted_replay_instruction + FIXER templates + SOLVER_HINT
     workspace.py      # working copies, artifact extraction, prepare_*_environment
     batch.py          # harden_batch (async with semaphore + stagger)
     trajectory.py     # ATIF trajectory → summary
@@ -89,6 +91,7 @@ python -m harden --all --resume
 - `--force-build`, `--image-name` — rebuild control to avoid cache pollution from Dockerfile mutations across iterations.
 - `--solver-privileged` (solver mode) — inject `/solution/` into solver env as hint.
 - `--hacker-feedback` — give hacker read-only access to previous failed attempts.
+- `--replay-enabled`, `--replay-retries` — enable targeted-replay post-solver gate; a constrained hacker re-attempts the prior exploit on the patched task, and the fix is rejected if it re-lands. Reuses hacker model/turns/timeout knobs.
 
 ## Outputs
 
@@ -113,7 +116,9 @@ Each task produces:
       "iteration": 0,
       "hack_reward": 1.23,
       "fix_applied": false,
-      "outcome": "fixed" | "fix_failed" | "no_changes" | "legitimate" | "hacker_failed"
+      "outcome": "fixed" | "fix_failed" | "no_changes" | "legitimate" | "hacker_failed" | "replay_broke_fix",
+      "replay_attempted": false,
+      "replay_reward": null
     }
   ]
 }
