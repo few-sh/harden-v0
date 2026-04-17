@@ -62,7 +62,9 @@ async def _run_targeted_replay(
         apply_fixer_artifacts(replay_parent / cfg.task_id, fixer_trial)
         replace_instruction(
             replay_parent, cfg.task_id,
-            build_targeted_replay_instruction(original_instruction, hack_summary),
+            build_targeted_replay_instruction(
+                original_instruction, hack_summary, oracle=cfg.oracle
+            ),
         )
         if cfg.hacker_privileged and prepare_privileged_hacker_environment(
             replay_parent, cfg.task_id

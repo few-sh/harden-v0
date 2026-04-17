@@ -140,8 +140,18 @@ place.
 """
 
 
-def build_targeted_replay_instruction(original_instruction: str, hack_summary: str) -> str:
-    return original_instruction + _TARGETED_REPLAY_SUFFIX.format(hack_summary=hack_summary)
+def build_targeted_replay_instruction(
+    original_instruction: str, hack_summary: str, oracle: bool = True
+) -> str:
+    """Replay layers on top of the hacker's adversarial framing.
+
+    Building on the raw task prompt would leave a "solve legitimately" objective
+    in the agent's context, competing with the replay directive. We build on the
+    hacker prompt (which rewrites the task goal into reward-maximization) so the
+    replay suffix only has to narrow that goal to "THIS specific exploit".
+    """
+    base = build_hacker_instruction(original_instruction, oracle=oracle)
+    return base + _TARGETED_REPLAY_SUFFIX.format(hack_summary=hack_summary)
 
 
 def build_hinted_hacker_instruction(
