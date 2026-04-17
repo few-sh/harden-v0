@@ -76,15 +76,17 @@ async def harden_batch(config: BatchHardenConfig) -> list[dict]:
         if skipped:
             logger.info("Resuming: skipping %d completed tasks", len(skipped))
     else:
+        skipped = []
         tasks_to_run = list(config.task_ids)
 
-    total = len(tasks_to_run)
+    total = len(config.task_ids)
+    n_to_run = len(tasks_to_run)
     logger.info(
-        "Batch hardening: %d tasks, max %d concurrent containers, oracle=%s",
-        total, config.max_concurrent_containers, config.oracle,
+        "Batch hardening: %d tasks (%d to run), max %d concurrent containers, oracle=%s",
+        total, n_to_run, config.max_concurrent_containers, config.oracle,
     )
 
-    progress = {"done": 0, "total": total}
+    progress = {"done": 0, "total": n_to_run}
     progress_lock = asyncio.Lock()
 
     async def _run_one(task_id: str) -> dict:
@@ -109,18 +111,29 @@ async def harden_batch(config: BatchHardenConfig) -> list[dict]:
             n_iters = len(result.get("iterations", []))
             logger.info(
                 "[%d/%d] %s: %s (%d iters, %.0fs)",
-                n, total, task_id, status, n_iters, elapsed,
+                n, n_to_run, task_id, status, n_iters, elapsed,
             )
             return result
 
-    # Process results as they arrive so batch_summary.json is updated continuously;
-    # finished=True on the last iteration to mark the run complete.
+    # Pre-populate results with previously completed tasks so the summary
+    # reflects the full batch, not just the current run.
     results: list[dict] = []
+    for task_id in skipped:
+        result_path = config.output_dir / task_id / "result.json"
+        try:
+            results.append(json.loads(result_path.read_text()))
+        except (json.JSONDecodeError, OSError):
+            logger.warning("[%s] Could not reload existing result; omitted from summary", task_id)
+
+    # Process results as they arrive so batch_summary.json is updated continuously;
+    # the unconditional call after the loop handles finished=True and the empty
+    # tasks_to_run edge case (all tasks already done on resume).
     coros = list(asyncio.as_completed([_run_one(task_id) for task_id in tasks_to_run]))
-    for i, coro in enumerate(coros):
+    for coro in coros:
         result = await coro
         results.append(result)
-        _print_summary(results, config, total=total, finished=(i == len(coros) - 1))
+        _print_summary(results, config, total=total, finished=False)
+    _print_summary(results, config, total=total, finished=True)
     return results
 
 
