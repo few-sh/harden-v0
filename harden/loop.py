@@ -58,7 +58,7 @@ async def _run_targeted_replay(
     """Up to cfg.replay_retries attempts; returns max reward observed."""
     best = 0.0
     for attempt in range(cfg.replay_retries):
-        replay_parent = create_working_copy(hardened_task_dir, output / "replay_task")
+        replay_parent = create_working_copy(hardened_task_dir, output / f"replay_task_iter{iteration}")
         apply_fixer_artifacts(replay_parent / cfg.task_id, fixer_trial)
         replace_instruction(
             replay_parent, cfg.task_id,
