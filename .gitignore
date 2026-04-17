@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+outputs/
+reports/
+harden_output/
+*.log
+.DS_Store
+trajectory_explorer_*.html
