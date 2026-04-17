@@ -92,7 +92,7 @@ python -m harden --all --resume
 - `--solver-privileged` (solver mode) — inject `/solution/` into solver env as hint.
 - `--hacker-privileged` — mount the evaluation environment (tests/, environment/) read-only at `/eval_env/` so the hacker can whitebox-inspect the verifier.
 - `--hacker-feedback` — give hacker read-only access to previous failed attempts.
-- `--replay-enabled`, `--replay-retries` — enable targeted-replay post-solver gate; a constrained hacker re-attempts the prior exploit on the patched task, and the fix is rejected if it re-lands. Reuses hacker model/turns/timeout knobs, and mirrors `--hacker-privileged` (replay gets the same `/eval_env/` mount as the hacker phase).
+- `--replay-enabled`, `--replay-retries` — enable targeted-replay post-solver gate; a constrained hacker re-attempts the prior exploit on the patched task, and the fix is rejected if it re-lands. Reuses hacker model/turns/timeout knobs, and inherits `--hacker-privileged` (if the hacker had `/eval_env/` access, replay does too — the exploit may reference it).
 
 ## Outputs
 
