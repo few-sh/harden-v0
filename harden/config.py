@@ -59,9 +59,6 @@ class HardenConfig:
     # is rejected (same control flow as a solver rejection).
     replay_enabled: bool = False
     replay_retries: int = 1
-    replay_max_turns: int | None = None
-    replay_timeout_multiplier: float = 2.0
-    replay_model: str | None = None  # None => fall back to hacker_model
 
     # Harbor knobs (solver mode: Dockerfile mutates across iterations; both modes can override image)
     harbor_config: Path | None = None

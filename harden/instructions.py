@@ -140,18 +140,8 @@ place.
 """
 
 
-def build_targeted_replay_instruction(
-    original_instruction: str, hack_summary: str
-) -> str:
-    """Instruction for the targeted-replay agent.
-
-    Unlike the hacker, replay does not reframe the task goal — it runs on top
-    of the original instruction (so the agent sees what a legitimate solve
-    looks like) and appends a strict directive to reproduce the prior exploit.
-    """
-    return original_instruction + _TARGETED_REPLAY_SUFFIX.format(
-        hack_summary=hack_summary
-    )
+def build_targeted_replay_instruction(original_instruction: str, hack_summary: str) -> str:
+    return original_instruction + _TARGETED_REPLAY_SUFFIX.format(hack_summary=hack_summary)
 
 
 def build_hinted_hacker_instruction(
