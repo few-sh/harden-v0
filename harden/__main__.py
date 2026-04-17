@@ -89,6 +89,19 @@ def _build_parser() -> argparse.ArgumentParser:
                         help="Give hacker read-only access to the evaluation environment "
                              "(tests/, environment/) at /eval_env/")
 
+    # Targeted replay (post-solver gate)
+    parser.add_argument("--replay-enabled", action="store_true",
+                        help="After solver validation passes, run a targeted-replay agent "
+                             "that re-attempts the specific prior exploit on the patched task. "
+                             "If it re-lands, the fix is rejected.")
+    parser.add_argument("--replay-retries", type=int, default=1,
+                        help="Targeted-replay retries per iteration (default: 1)")
+    parser.add_argument("--replay-max-turns", type=int, default=None,
+                        help="Max turns for replay agent (default: None)")
+    parser.add_argument("--replay-timeout-multiplier", type=float, default=2.0)
+    parser.add_argument("--replay-model", default=None,
+                        help="Model for replay agent (default: None = reuse --hacker-model)")
+
     # Harbor knobs
     parser.add_argument("-c", "--harbor-config", type=Path, default=None,
                         help="Path to a Harbor YAML/JSON config file for environment/agent/orchestrator defaults")
@@ -138,6 +151,11 @@ def _config_kwargs(args: argparse.Namespace) -> dict:
         solver_privileged=args.solver_privileged,
         hacker_feedback=args.hacker_feedback,
         hacker_privileged=args.hacker_privileged,
+        replay_enabled=args.replay_enabled,
+        replay_retries=args.replay_retries,
+        replay_max_turns=args.replay_max_turns,
+        replay_timeout_multiplier=args.replay_timeout_multiplier,
+        replay_model=args.replay_model,
         harbor_config=args.harbor_config,
         force_build=args.force_build,
         image_name=args.image_name,

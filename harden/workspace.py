@@ -46,20 +46,24 @@ def create_hardened_copy(original_dir: Path, output_dir: Path, resume: bool) -> 
     return create_working_copy(original_dir, hardened_parent)
 
 
-def update_hardened(hardened_task_dir: Path, fixer_trial_dir: Path) -> None:
-    """Update the canonical hardened state with fixer artifacts.
-
-    Replaces tests/ and environment/ in the hardened dir with the fixer's
-    committed versions. Called only after solver validation passes.
-    """
+def apply_fixer_artifacts(task_dir: Path, fixer_trial_dir: Path) -> None:
+    """Replace tests/ and environment/ in `task_dir` with fixer's committed versions."""
     artifacts = fixer_trial_dir / "artifacts"
     for subdir in ("tests", "environment"):
         src = artifacts / subdir
-        dest = hardened_task_dir / subdir
+        dest = task_dir / subdir
         if src.is_dir():
             if dest.exists():
                 shutil.rmtree(dest)
             shutil.copytree(src, dest)
+
+
+def update_hardened(hardened_task_dir: Path, fixer_trial_dir: Path) -> None:
+    """Update the canonical hardened state with fixer artifacts.
+
+    Called only after all post-fix gates (solver + optional replay) pass.
+    """
+    apply_fixer_artifacts(hardened_task_dir, fixer_trial_dir)
     logger.info("Updated hardened state from fixer artifacts")
 
 

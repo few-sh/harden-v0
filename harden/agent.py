@@ -136,6 +136,45 @@ async def run_solver_agent(
     )
 
 
+async def run_targeted_replay(
+    task_parent_dir: Path,
+    model_name: str,
+    jobs_dir: Path,
+    role: str,
+    max_turns: int | None = None,
+    temperature: float | None = None,
+    max_tokens: int | None = None,
+    reasoning_effort: str | None = None,
+    timeout_multiplier: float = 1.0,
+    harbor_config: Path | None = None,
+    force_build: bool = False,
+    image_name: str | None = None,
+) -> tuple[float, Path]:
+    """Run a Terminus-2 replay agent — constrained to reproduce a known exploit.
+
+    Same Harbor setup as the hacker (verifier enabled, /solution artifact). What
+    differs is the instruction (strict-replay directive) and the working copy
+    (patched task, not original).
+    """
+    return await _run_agent(
+        task_parent_dir=task_parent_dir,
+        agent_name=AgentName.TERMINUS_2,
+        model_name=model_name,
+        jobs_dir=jobs_dir,
+        role=role,
+        max_turns=max_turns,
+        temperature=temperature,
+        max_tokens=max_tokens,
+        reasoning_effort=reasoning_effort,
+        disable_verifier=False,
+        artifacts=["/solution"],
+        timeout_multiplier=timeout_multiplier,
+        harbor_config=harbor_config,
+        force_build=force_build,
+        image_name=image_name,
+    )
+
+
 async def run_fixer(
     task_parent_dir: Path,
     model_name: str,
