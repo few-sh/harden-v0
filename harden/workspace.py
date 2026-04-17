@@ -180,7 +180,7 @@ def prepare_privileged_hacker_environment(
             continue
         dest = env_copy / item.name
         if item.is_dir():
-            shutil.copytree(item, dest)
+            shutil.copytree(item, dest, ignore_dangling_symlinks=True)
         else:
             shutil.copy2(item, dest)
 
