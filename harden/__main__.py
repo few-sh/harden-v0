@@ -13,7 +13,9 @@ from .loop import harden_task
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Adversarial hardening loop — oracle mode (KernelBench) or solver mode (generic).",
+        description="Adversarial hardening loop. Two orthogonal mode flags: "
+                    "--oracle (deterministic pre-check) and --kernelbench-mode "
+                    "(KB-specific prompts/templates). KernelBench runs pass both.",
     )
 
     # Task selection — mutually exclusive
@@ -34,11 +36,17 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--output-dir", type=Path, default=None)
 
-    # Mode
+    # Mode (two orthogonal flags)
     parser.add_argument(
         "--oracle", dest="oracle", action="store_true", default=False,
-        help="Use deterministic oracle pre-check (KernelBench style: reference.py → solution.py). "
-             "Default is solver-agent mode.",
+        help="Use deterministic pre-check (copies reference.py → solution.py via solve.sh). "
+             "Default is agent-solver pre-check.",
+    )
+    parser.add_argument(
+        "--kernelbench-mode", dest="kernelbench_mode", action="store_true", default=False,
+        help="Use KernelBench-specific prompts, templates, and eval-file check "
+             "(speedup metric, eval_kernel.py). Default is generic task-verifier framing "
+             "(pass/fail reward, test_outputs.py). KernelBench runs need both --oracle and this.",
     )
 
     # Models
@@ -123,6 +131,7 @@ def _config_kwargs(args: argparse.Namespace) -> dict:
         tasks_dir=args.tasks_dir,
         output_dir=args.output_dir,
         oracle=args.oracle,
+        kernelbench_mode=args.kernelbench_mode,
         hacker_model=args.hacker_model,
         fixer_model=args.fixer_model,
         solver_model=args.solver_model,

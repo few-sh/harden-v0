@@ -8,20 +8,32 @@ agents (Terminus-2 via Harbor) play adversarial roles:
 3. **Solver / Oracle** — pre-check and post-fix validation (validates task is solvable & fix doesn't break it).
 4. **Targeted replay** (optional, `--replay-enabled`) — after solver accepts the fix, re-runs a constrained hacker on the patched task with the prior exploit as a replay target. If it re-lands, the fix is rejected.
 
-## Two modes (selected by `oracle: bool`)
+## Mode flags (two orthogonal axes)
 
-Both modes run the same loop; only the pre-check/validation step differs.
+Two independent flags control the loop:
 
-| | `oracle=True` (KernelBench; enable with `--oracle`) | `oracle=False` (default, solver mode, generic) |
-|--|--|--|
-| Pre-check | `run_oracle_solver` — deterministic (`reference.py → solution.py`) | `run_solver_agent` — terminus-2 solves the task |
-| Central file | `tests/eval_kernel.py` | `tests/test_outputs.py` |
-| Metric | Speedup (`reference_time / your_time`) | Reward (0–1 pass/fail) |
-| Hack threshold | KB: `--hack-threshold 10` | Default 1.0 |
-| Solver threshold | KB: `--solver-threshold 0.5` | Default 1.0 |
-| `.legitimate` marker | Enabled by default (disable with `--no-legitimate-marker`) | Enabled by default (disable with `--no-legitimate-marker`) |
-| `solver_privileged` | N/A (oracle is deterministic) | Optional — inject `/solution/` as solver hint |
-| Hardened state | `output/hardened/<task_id>/` (full patched task dir) | `output/hardened/<task_id>/` (full patched task dir) |
+* `--oracle` — selects the **pre-check/validation mechanism**: deterministic
+  reference copy (`reference.py → solution.py`) if set, agent solver
+  (Terminus-2) if not.
+* `--kernelbench-mode` — selects the **prompt/template bundle**: KernelBench
+  framing (speedup metric, `eval_kernel.py`, runtime-minimization hacker goal,
+  KB-specific fixer template) if set, generic framing (pass/fail reward,
+  `test_outputs.py`, verifier-bypass hacker goal, generic fixer template) if
+  not.
+
+The two commonly travel together (KernelBench runs pass both, generic slime
+tasks pass neither), but they're decoupled because nothing forces the
+coupling — a generic task with a deterministic reference could use `--oracle`
+alone, and a KB-style framing could conceivably run with an agent solver.
+
+| axis | flag | True | False (default) |
+|------|------|------|-----------------|
+| Pre-check | `--oracle` | `run_oracle_solver` (deterministic) | `run_solver_agent` (Terminus-2) |
+| Prompts / templates | `--kernelbench-mode` | KB framing, `eval_kernel.py`, speedup | Generic framing, `test_outputs.py`, reward |
+| Hack / solver thresholds | `--hack-threshold` / `--solver-threshold` | KB uses `10` / `0.5` | Default `1.0` / `1.0` |
+| `.legitimate` marker | `--no-legitimate-marker` disables | enabled by default | enabled by default |
+| `solver_privileged` | N/A when `--oracle` (deterministic) | — | Optional — inject `/solution/` as solver hint |
+| Hardened state | — | `output/hardened/<task_id>/` | `output/hardened/<task_id>/` |
 
 ## Loop
 
@@ -72,8 +84,8 @@ python -m harden --task-id <task-id> \
   --solver-privileged \
   --max-iterations 5
 
-# Oracle mode (KernelBench) — opt in
-python -m harden --oracle --task-id matmul \
+# KernelBench — pass BOTH flags
+python -m harden --oracle --kernelbench-mode --task-id matmul \
   --hack-threshold 10 --solver-threshold 0.5 \
   --max-iterations 5
 
@@ -84,7 +96,8 @@ python -m harden --all --resume
 
 ## Key knobs (see `harden --help` for full list)
 
-- `--oracle` — switch to deterministic oracle pre-check (KernelBench mode). Default is solver mode.
+- `--oracle` — use deterministic pre-check (reference.py → solution.py). Default is agent solver.
+- `--kernelbench-mode` — use KB-specific prompts/templates (speedup metric, `eval_kernel.py`). Independent of `--oracle`; KB runs pass both.
 - `--no-legitimate-marker` — disable the `.legitimate` sentinel (fixer can't flag a hack as legitimate).
 - `--hack-threshold`, `--solver-threshold` — gates on reward/speedup.
 - `--harbor-config` — yaml/json Harbor JobConfig defaults to layer under harden overrides.
@@ -111,6 +124,7 @@ Each task produces:
   "task_id": "<string>",
   "status": "robust" | "max_iterations" | "solver_failed_precheck" | "error" | "unknown",
   "oracle": true,
+  "kernelbench_mode": true,
   "hardened_dir": "<path>",
   "iterations": [
     {
@@ -138,4 +152,5 @@ Non-terminal (re-run on `--resume`): `error`, `unknown`, missing `result.json`.
 - **Fixer's git repo lives at `/logs/artifacts/`**, not `/`. Edits to `/tests/` are ephemeral. The fixer prompt reminds the agent; if you change the prompt, keep this detail.
 - **`shutil.copytree` on broken symlinks**: `prepare_fixer_environment` uses `ignore_dangling_symlinks=True` where needed.
 - **Dockerfile mutation across iterations**: hardened state cascades — once `hardened_dirty`, force_build + separate `image_name` on every subsequent run. The loop tracks this explicitly.
-- **Hack vs solver threshold defaults**: The built-in defaults (1.0 / 1.0) fit solver mode. KernelBench runs MUST pass `--hack-threshold 10 --solver-threshold 0.5`.
+- **Hack vs solver threshold defaults**: The built-in defaults (1.0 / 1.0) fit generic mode. KernelBench runs MUST pass `--hack-threshold 10 --solver-threshold 0.5`.
+- **KernelBench needs BOTH mode flags**: `--oracle` alone gives a deterministic pre-check with generic prompts; `--kernelbench-mode` alone gives KB prompts with an agent solver pre-check. Real KB runs need both.
