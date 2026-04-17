@@ -113,20 +113,25 @@ async def harden_batch(config: BatchHardenConfig) -> list[dict]:
             )
             return result
 
-    results = await asyncio.gather(*[_run_one(task_id) for task_id in tasks_to_run])
+    # Process results as they arrive so batch_summary.json is updated continuously;
+    # finished=True on the last iteration to mark the run complete.
+    results: list[dict] = []
+    coros = list(asyncio.as_completed([_run_one(task_id) for task_id in tasks_to_run]))
+    for i, coro in enumerate(coros):
+        result = await coro
+        results.append(result)
+        _print_summary(results, config, total=total, finished=(i == len(coros) - 1))
+    return results
 
-    _print_summary(results, config)
-    return list(results)
 
-
-def _print_summary(results: list[dict], config: BatchHardenConfig) -> None:
+def _print_summary(results: list[dict], config: BatchHardenConfig, *, total: int, finished: bool = False) -> None:
     counts = Counter(r.get("status", "unknown") for r in results)
-    total = len(results)
+    n_finished = len(results)
 
     print(f"\n{'='*60}")
     print("Batch Hardening Summary")
     print(f"{'='*60}")
-    print(f"Total tasks processed: {total}")
+    print(f"Total tasks: {total}  |  Finished: {n_finished}")
     for status in ["robust", "max_iterations", "solver_failed_precheck", "error", "unknown"]:
         if counts[status]:
             print(f"  {status:.<30} {counts[status]}")
@@ -135,7 +140,9 @@ def _print_summary(results: list[dict], config: BatchHardenConfig) -> None:
     summary_path = config.output_dir / "batch_summary.json"
     summary_path.parent.mkdir(parents=True, exist_ok=True)
     summary = {
+        "harden_run_finished": finished,
         "total": total,
+        "finished": n_finished,
         "counts": dict(counts),
         "tasks": [
             {"task_id": r.get("task_id"), "status": r.get("status")}
