@@ -90,8 +90,9 @@ python -m harden --all --resume
 - `--harbor-config` — yaml/json Harbor JobConfig defaults to layer under harden overrides.
 - `--force-build`, `--image-name` — rebuild control to avoid cache pollution from Dockerfile mutations across iterations.
 - `--solver-privileged` (solver mode) — inject `/solution/` into solver env as hint.
+- `--hacker-privileged` — mount the evaluation environment (tests/, environment/) read-only at `/eval_env/` so the hacker can whitebox-inspect the verifier.
 - `--hacker-feedback` — give hacker read-only access to previous failed attempts.
-- `--replay-enabled`, `--replay-retries` — enable targeted-replay post-solver gate; a constrained hacker re-attempts the prior exploit on the patched task, and the fix is rejected if it re-lands. Reuses hacker model/turns/timeout knobs.
+- `--replay-enabled`, `--replay-retries` — enable targeted-replay post-solver gate; a constrained hacker re-attempts the prior exploit on the patched task, and the fix is rejected if it re-lands. Reuses hacker model/turns/timeout knobs, and mirrors `--hacker-privileged` (replay gets the same `/eval_env/` mount as the hacker phase).
 
 ## Outputs
 
