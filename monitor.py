@@ -56,7 +56,7 @@ def collect_jobs(jobs_dir):
         role = m.group(1)
         done, reward = get_job_status(d)
 
-        if role == "solver_precheck":
+        if role.startswith("solver_precheck"):
             precheck = (done, reward)
             continue
 

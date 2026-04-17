@@ -7,7 +7,7 @@ from datetime import datetime
 from pathlib import Path
 
 from .batch import harden_batch
-from .config import BatchHardenConfig, HardenConfig
+from .config import DEFAULT_TASKS_DIR, BatchHardenConfig, HardenConfig
 from .loop import harden_task
 
 
@@ -29,9 +29,8 @@ def _build_parser() -> argparse.ArgumentParser:
     )
 
     parser.add_argument(
-        "--tasks-dir", type=Path,
-        default=Path("/lambda/nfs/reward-hacking/harbor/datasets/kernelbench"),
-        help="Base directory containing task environments",
+        "--tasks-dir", type=Path, default=DEFAULT_TASKS_DIR,
+        help=f"Base directory containing task environments (default: {DEFAULT_TASKS_DIR})",
     )
     parser.add_argument("--output-dir", type=Path, default=None)
 

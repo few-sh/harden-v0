@@ -44,15 +44,24 @@ def _save_batch_config(config: BatchHardenConfig) -> None:
     logger.info("Saved batch configuration to %s", config_path)
 
 
-def _is_completed(output_dir: Path, task_id: str) -> bool:
+def _is_completed(output_dir: Path, task_id: str, oracle: bool) -> bool:
+    """A task is complete only if its result is terminal AND its mode matches."""
     result_path = output_dir / task_id / "result.json"
     if not result_path.exists():
         return False
     try:
         result = json.loads(result_path.read_text())
-        return result.get("status") in _TERMINAL_STATUSES
     except (json.JSONDecodeError, OSError):
         return False
+    if result.get("status") not in _TERMINAL_STATUSES:
+        return False
+    if result.get("oracle") != oracle:
+        logger.warning(
+            "[%s] Previous result has oracle=%s but current config has oracle=%s — re-running.",
+            task_id, result.get("oracle"), oracle,
+        )
+        return False
+    return True
 
 
 async def harden_batch(config: BatchHardenConfig) -> list[dict]:
@@ -61,7 +70,8 @@ async def harden_batch(config: BatchHardenConfig) -> list[dict]:
     semaphore = asyncio.Semaphore(config.max_concurrent_containers)
 
     if config.resume:
-        skipped = [t for t in config.task_ids if _is_completed(config.output_dir, t)]
+        skipped = [t for t in config.task_ids
+                   if _is_completed(config.output_dir, t, config.oracle)]
         tasks_to_run = [t for t in config.task_ids if t not in set(skipped)]
         if skipped:
             logger.info("Resuming: skipping %d completed tasks", len(skipped))

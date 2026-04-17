@@ -9,3 +9,5 @@ harden_output/
 *.log
 .DS_Store
 trajectory_explorer_*.html
+extract_iter1.py
+extract_log.py

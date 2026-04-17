@@ -259,11 +259,16 @@ async def _run_agent(
 
 def read_verifier_output(trial_dir: Path) -> str:
     """Read verifier stdout/stderr for failure feedback."""
+    verifier_dir = trial_dir / "verifier"
+    if not verifier_dir.is_dir():
+        logger.warning("No verifier/ dir in %s — Harbor may have failed to run the verifier.",
+                       trial_dir)
+        return "(verifier directory missing)"
     parts: list[str] = []
     for name in ("test-stdout.txt", "test-stderr.txt"):
-        path = trial_dir / "verifier" / name
+        path = verifier_dir / name
         if path.exists():
             content = path.read_text().strip()
             if content:
                 parts.append(f"=== {name} ===\n{content}")
-    return "\n\n".join(parts) if parts else "(no verifier output)"
+    return "\n\n".join(parts) if parts else "(verifier produced no output)"
