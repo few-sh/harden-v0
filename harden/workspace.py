@@ -30,16 +30,18 @@ def create_working_copy(source_dir: Path, dest_parent: Path) -> Path:
     return dest_parent
 
 
-def create_hardened_copy(original_dir: Path, output_dir: Path) -> Path:
+def create_hardened_copy(original_dir: Path, output_dir: Path, resume: bool) -> Path:
     """Create the canonical hardened/ directory from the original task.
 
-    Preserves existing hardened state on --resume.
+    If `resume` is True and a prior hardened/<task>/ exists, preserve it so
+    previously validated fixes are kept. Otherwise always start fresh from the
+    original task.
     """
     hardened_parent = output_dir / "hardened"
     task_id = original_dir.name
     existing = hardened_parent / task_id
-    if existing.is_dir():
-        logger.info("Preserving existing hardened state at %s", existing)
+    if resume and existing.is_dir():
+        logger.info("Resuming: preserving existing hardened state at %s", existing)
         return hardened_parent
     return create_working_copy(original_dir, hardened_parent)
 
@@ -65,23 +67,28 @@ def prepare_solver_environment(
     solver_parent: Path,
     task_id: str,
     original_dir: Path,
-) -> None:
+) -> bool:
     """Inject reference solution into solver's Docker environment (read-only).
 
     Solver mode + `solver_privileged` only. The solver is a Terminus-2 agent
     trying to solve the task; the reference at `/solution/` acts as a hint.
+
+    Returns True if the solution was mounted; False if there was nothing to mount
+    (no Dockerfile or no solution/ dir). The caller must not append SOLVER_HINT
+    unless this returned True, otherwise the solver is told about a path that
+    doesn't exist.
     """
     task_dir = solver_parent / task_id
     env_dir = task_dir / "environment"
     dockerfile = env_dir / "Dockerfile"
 
     if not dockerfile.exists():
-        return
+        return False
 
     solution_src = original_dir / "solution"
     if not solution_src.is_dir():
         logger.warning("No solution/ dir in %s — skipping solver privileged setup", original_dir)
-        return
+        return False
 
     solution_dest = env_dir / "solution"
     if solution_dest.exists():
@@ -95,6 +102,7 @@ def prepare_solver_environment(
         "RUN chmod -R a-w /solution/\n"
     )
     dockerfile.write_text(content)
+    return True
 
 
 def prepare_hacker_environment(

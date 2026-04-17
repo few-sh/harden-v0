@@ -100,6 +100,10 @@ async def run_trial(
         if dockerfile.exists():
             df_text = dockerfile.read_text()
             if "tmux" not in df_text:
+                # Note: this Dockerfile edit won't take effect unless Harbor
+                # rebuilds the image (we don't pass force_build / image_name
+                # below). If tmux/asciinema aren't present the probe still runs;
+                # the capture is just optional.
                 df_text += "\nRUN apt-get update -qq && apt-get install -y -qq tmux asciinema && rm -rf /var/lib/apt/lists/*\n"
                 dockerfile.write_text(df_text)
 

@@ -98,7 +98,8 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-concurrent", type=int, default=4,
                         help="Max concurrent Docker containers (batch mode)")
     parser.add_argument("--resume", action="store_true",
-                        help="Skip tasks that already have terminal results (batch mode)")
+                        help="Preserve existing output/hardened/<task>/ from a prior run; "
+                             "in batch mode also skip tasks whose result.json is terminal.")
 
     parser.add_argument("--log-level", default="INFO",
                         choices=["DEBUG", "INFO", "WARNING", "ERROR"],
@@ -136,6 +137,7 @@ def _config_kwargs(args: argparse.Namespace) -> dict:
         harbor_config=args.harbor_config,
         force_build=args.force_build,
         image_name=args.image_name,
+        resume=args.resume,
     )
 
 
@@ -196,7 +198,6 @@ def _run_batch(args: argparse.Namespace) -> None:
     config = BatchHardenConfig(
         task_ids=task_ids,
         max_concurrent_containers=args.max_concurrent,
-        resume=args.resume,
         **_config_kwargs(args),
     )
     asyncio.run(harden_batch(config))

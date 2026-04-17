@@ -123,6 +123,7 @@ def _count_exceptions(task_dir: Path) -> tuple[int, bool]:
 def _infer_precheck_failure_without_task_result(
     task_dir: Path,
     solver_precheck_retries: int | None,
+    solver_threshold: float,
 ) -> bool:
     job_dirs = list(_iter_job_dirs(task_dir))
     if not job_dirs:
@@ -135,11 +136,11 @@ def _infer_precheck_failure_without_task_result(
     if solver_precheck_retries is not None and len(job_dirs) < solver_precheck_retries:
         return False
 
-    # If all precheck rewards are explicitly < 1.0, infer precheck failure.
+    # If all precheck rewards are explicitly below solver_threshold, infer failure.
     # Missing reward keeps this conservative (returns False).
     for jd in job_dirs:
         reward = _job_reward(jd)
-        if reward is None or reward >= 1.0:
+        if reward is None or reward >= solver_threshold:
             return False
     return True
 
@@ -148,6 +149,7 @@ def classify_task(
     batch_dir: Path,
     task_id: str,
     solver_precheck_retries: int | None,
+    solver_threshold: float,
 ) -> TaskStats:
     task_dir = batch_dir / task_id
     result = _load_json(task_dir / "result.json")
@@ -176,7 +178,7 @@ def classify_task(
         precheck_failed = True
     elif not completed:
         precheck_failed = _infer_precheck_failure_without_task_result(
-            task_dir, solver_precheck_retries
+            task_dir, solver_precheck_retries, solver_threshold
         )
         if precheck_failed:
             lifecycle = "precheck_failed_inferred"
@@ -295,13 +297,16 @@ def main(argv: list[str] | None = None) -> int:
     solver_precheck_retries = cfg.get("solver_precheck_retries")
     if not isinstance(solver_precheck_retries, int):
         solver_precheck_retries = None
+    solver_threshold = cfg.get("solver_threshold")
+    if not isinstance(solver_threshold, (int, float)):
+        solver_threshold = 1.0
 
     task_ids = _task_ids_from_batch_config(batch_dir)
     if not task_ids:
         task_ids = _task_ids_from_dirs(batch_dir)
 
     stats = [
-        classify_task(batch_dir, task_id, solver_precheck_retries)
+        classify_task(batch_dir, task_id, solver_precheck_retries, solver_threshold)
         for task_id in task_ids
     ]
 

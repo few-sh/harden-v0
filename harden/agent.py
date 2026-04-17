@@ -230,7 +230,7 @@ async def _run_agent(
     if force_build:
         base_config.environment.force_build = True
     if image_name is not None:
-        base_config.environment.kwargs.setdefault("image_name", image_name)
+        base_config.environment.kwargs["image_name"] = image_name
 
     job = Job(config=base_config)
 

@@ -102,7 +102,7 @@ async def harden_task(config: HardenConfig) -> dict:
         "oracle": config.oracle,
     }
 
-    hardened_parent = create_hardened_copy(original_dir, output)
+    hardened_parent = create_hardened_copy(original_dir, output, resume=config.resume)
     hardened_task_dir = hardened_parent / config.task_id
 
     # Separate image name for harden runs so we don't clobber the base image.
@@ -112,9 +112,9 @@ async def harden_task(config: HardenConfig) -> dict:
     solver_parent = create_working_copy(hardened_task_dir, output / "solver_task")
     precheck_modified = False
     if not config.oracle and config.solver_privileged:
-        prepare_solver_environment(solver_parent, config.task_id, original_dir)
-        append_to_instruction(solver_parent, config.task_id, SOLVER_HINT)
-        precheck_modified = True
+        if prepare_solver_environment(solver_parent, config.task_id, original_dir):
+            append_to_instruction(solver_parent, config.task_id, SOLVER_HINT)
+            precheck_modified = True
 
     # Pre-check: solver must pass the original task. Retries only meaningful for agent solver.
     precheck_retries = 1 if config.oracle else config.solver_precheck_retries
@@ -279,9 +279,9 @@ async def harden_task(config: HardenConfig) -> dict:
             else:  # "applied"
                 validate_modified = False
                 if not config.oracle and config.solver_privileged:
-                    prepare_solver_environment(solver_parent, config.task_id, original_dir)
-                    append_to_instruction(solver_parent, config.task_id, SOLVER_HINT)
-                    validate_modified = True
+                    if prepare_solver_environment(solver_parent, config.task_id, original_dir):
+                        append_to_instruction(solver_parent, config.task_id, SOLVER_HINT)
+                        validate_modified = True
 
                 solver_needs_rebuild = validate_modified or hardened_dirty
                 solver_reward, solver_trial = await _run_solver(

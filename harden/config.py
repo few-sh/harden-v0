@@ -58,6 +58,9 @@ class HardenConfig:
     force_build: bool = False
     image_name: str | None = None
 
+    # If True, preserve an existing output/hardened/<task>/ from a prior run.
+    resume: bool = False
+
     @property
     def task_dir(self) -> Path:
         return self.tasks_dir / self.task_id
@@ -79,7 +82,6 @@ class HardenConfig:
 class BatchHardenConfig(HardenConfig):
     task_ids: list[str] = field(default_factory=list)
     max_concurrent_containers: int = 4
-    resume: bool = False
 
     def make_task_config(self, task_id: str) -> HardenConfig:
         base_fields = {f.name for f in dataclasses.fields(HardenConfig)}
