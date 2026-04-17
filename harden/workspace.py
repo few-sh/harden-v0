@@ -171,7 +171,7 @@ def prepare_privileged_hacker_environment(
         shutil.rmtree(eval_env_dir)
     eval_env_dir.mkdir()
 
-    shutil.copytree(tests_src, eval_env_dir / "tests")
+    shutil.copytree(tests_src, eval_env_dir / "tests", ignore_dangling_symlinks=True)
 
     env_copy = eval_env_dir / "environment"
     env_copy.mkdir()
