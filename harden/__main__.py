@@ -194,11 +194,15 @@ def _run_single(args: argparse.Namespace) -> None:
 
     status = result.get("status", "unknown")
     iterations = result.get("iterations", [])
-    metric = "speedup" if config.oracle else "reward"
+    # Metric label follows kernelbench_mode (what the verifier actually scores),
+    # not oracle (which only controls the pre-check dispatch).
+    metric = "speedup" if config.kernelbench_mode else "reward"
+    precheck = "oracle" if config.oracle else "solver-agent"
+    framing = "kernelbench" if config.kernelbench_mode else "generic"
 
     print(f"\n{'='*60}")
     print(f"Task:       {config.task_id}")
-    print(f"Mode:       {'oracle' if config.oracle else 'solver'}")
+    print(f"Mode:       pre-check={precheck}, framing={framing}")
     print(f"Status:     {status}")
     print(f"Iterations: {len(iterations)}")
     for it in iterations:
