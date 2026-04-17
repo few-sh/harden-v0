@@ -32,7 +32,7 @@ For each iteration (up to `max_iterations`, default 10):
    - Runs in Docker with tests/, solution/ baked in.
    - Edits files in `/logs/artifacts/` (git repo); only committed changes extracted.
    - On retry: previous attempt + solver output mounted read-only.
-   - Can mark hack as legitimate via `.legitimate` sentinel (oracle mode).
+   - Can mark hack as legitimate via `.legitimate` sentinel (enabled by default; `--no-legitimate-marker` to disable).
 3. **Validate**: solver/oracle must still pass. If not, revert; feedback sent to fixer next iteration.
 
 ## Module layout
