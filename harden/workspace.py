@@ -46,20 +46,24 @@ def create_hardened_copy(original_dir: Path, output_dir: Path, resume: bool) -> 
     return create_working_copy(original_dir, hardened_parent)
 
 
-def update_hardened(hardened_task_dir: Path, fixer_trial_dir: Path) -> None:
-    """Update the canonical hardened state with fixer artifacts.
-
-    Replaces tests/ and environment/ in the hardened dir with the fixer's
-    committed versions. Called only after solver validation passes.
-    """
+def apply_fixer_artifacts(task_dir: Path, fixer_trial_dir: Path) -> None:
+    """Replace tests/ and environment/ in `task_dir` with fixer's committed versions."""
     artifacts = fixer_trial_dir / "artifacts"
     for subdir in ("tests", "environment"):
         src = artifacts / subdir
-        dest = hardened_task_dir / subdir
+        dest = task_dir / subdir
         if src.is_dir():
             if dest.exists():
                 shutil.rmtree(dest)
             shutil.copytree(src, dest)
+
+
+def update_hardened(hardened_task_dir: Path, fixer_trial_dir: Path) -> None:
+    """Update the canonical hardened state with fixer artifacts.
+
+    Called only after all post-fix gates (solver + optional replay) pass.
+    """
+    apply_fixer_artifacts(hardened_task_dir, fixer_trial_dir)
     logger.info("Updated hardened state from fixer artifacts")
 
 
@@ -142,6 +146,54 @@ def prepare_hacker_environment(
     dockerfile.write_text(content)
 
 
+def prepare_privileged_hacker_environment(
+    hacker_parent: Path,
+    task_id: str,
+) -> bool:
+    """Inject evaluation files (tests/, environment/) into hacker's Docker image at /eval_env/ (read-only).
+
+    Returns True if mounted, False if nothing to mount.
+    """
+    task_dir = hacker_parent / task_id
+    env_dir = task_dir / "environment"
+    dockerfile = env_dir / "Dockerfile"
+
+    if not dockerfile.exists():
+        return False
+
+    tests_src = task_dir / "tests"
+    if not tests_src.is_dir():
+        logger.warning("No tests/ in %s — skipping privileged hacker setup", task_dir)
+        return False
+
+    eval_env_dir = env_dir / "eval_env"
+    if eval_env_dir.exists():
+        shutil.rmtree(eval_env_dir)
+    eval_env_dir.mkdir()
+
+    shutil.copytree(tests_src, eval_env_dir / "tests", ignore_dangling_symlinks=True)
+
+    env_copy = eval_env_dir / "environment"
+    env_copy.mkdir()
+    for item in env_dir.iterdir():
+        if item.name == "eval_env":
+            continue
+        dest = env_copy / item.name
+        if item.is_dir():
+            shutil.copytree(item, dest, ignore_dangling_symlinks=True)
+        else:
+            shutil.copy2(item, dest)
+
+    content = dockerfile.read_text()
+    content += (
+        "\n# Added by harden: mount evaluation environment for privileged hacker\n"
+        "COPY eval_env/ /eval_env/\n"
+        "RUN chmod -R a-w /eval_env/\n"
+    )
+    dockerfile.write_text(content)
+    return True
+
+
 def prepare_fixer_environment(
     working_copy_parent: Path,
     task_id: str,
@@ -191,7 +243,7 @@ def prepare_fixer_environment(
     for item in env_dir.iterdir():
         if item.name in ("tests", "solution", "environment_copy",
                          "previous_attempt", "previous_solver",
-                         "previous_hacks",
+                         "previous_hacks", "eval_env",
                          "harden-entrypoint.sh"):
             continue
         dest = environment_copy_dir / item.name

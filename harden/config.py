@@ -52,6 +52,13 @@ class HardenConfig:
     hacker_timeout_multiplier: float = 2.0
     fixer_timeout_multiplier: float = 10.0
     solver_privileged: bool = False
+    hacker_privileged: bool = False
+
+    # Targeted replay (post-solver gate): re-run hacker constrained to reproduce the
+    # specific prior exploit on the patched task. If the exploit re-lands, the fix
+    # is rejected (same control flow as a solver rejection).
+    replay_enabled: bool = False
+    replay_retries: int = 1
 
     # Harbor knobs (solver mode: Dockerfile mutates across iterations; both modes can override image)
     harbor_config: Path | None = None

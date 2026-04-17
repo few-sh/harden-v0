@@ -21,24 +21,75 @@ from .agent import (
 from .config import HardenConfig
 from .instructions import (
     HACKER_FEEDBACK_HINT,
+    HACKER_PRIVILEGED_HINT,
     SOLVER_HINT,
     build_fixer_instruction,
     build_hacker_instruction,
+    build_targeted_replay_instruction,
 )
 from .trajectory import extract_hack_summary
 from .workspace import (
     append_to_instruction,
+    apply_fixer_artifacts,
     create_hardened_copy,
     create_working_copy,
     extract_fixer_artifacts,
     prepare_fixer_environment,
     prepare_hacker_environment,
+    prepare_privileged_hacker_environment,
     prepare_solver_environment,
     replace_instruction,
     update_hardened,
 )
 
 logger = logging.getLogger(__name__)
+
+
+async def _run_targeted_replay(
+    cfg: HardenConfig,
+    hardened_task_dir: Path,
+    fixer_trial: Path,
+    hack_summary: str,
+    original_instruction: str,
+    output: Path,
+    harden_image: str,
+    iteration: int,
+) -> float:
+    """Up to cfg.replay_retries attempts; returns max reward observed."""
+    best = 0.0
+    for attempt in range(cfg.replay_retries):
+        replay_parent = create_working_copy(hardened_task_dir, output / f"replay_task_iter{iteration}")
+        apply_fixer_artifacts(replay_parent / cfg.task_id, fixer_trial)
+        replace_instruction(
+            replay_parent, cfg.task_id,
+            build_targeted_replay_instruction(
+                original_instruction, hack_summary, oracle=cfg.oracle
+            ),
+        )
+        if cfg.hacker_privileged and prepare_privileged_hacker_environment(
+            replay_parent, cfg.task_id
+        ):
+            append_to_instruction(replay_parent, cfg.task_id, HACKER_PRIVILEGED_HINT)
+
+        reward, _ = await run_hacker(
+            replay_parent, cfg.hacker_model, cfg.jobs_dir,
+            role=f"replay_iter{iteration}_a{attempt}",
+            max_turns=cfg.hacker_max_turns,
+            temperature=cfg.temperature,
+            max_tokens=cfg.max_tokens,
+            reasoning_effort=cfg.reasoning_effort,
+            timeout_multiplier=cfg.hacker_timeout_multiplier,
+            harbor_config=cfg.harbor_config,
+            # Rebuild to discard solver's possibly-privileged image.
+            force_build=True,
+            image_name=harden_image,
+        )
+        best = max(best, reward)
+        logger.info("Replay %d/%d: reward=%.2f (threshold=%.2f).",
+                    attempt + 1, cfg.replay_retries, reward, cfg.hack_threshold)
+        if reward >= cfg.hack_threshold:
+            return best
+    return best
 
 
 async def _run_solver(
@@ -153,7 +204,13 @@ async def harden_task(config: HardenConfig) -> dict:
     hardened_dirty: bool = False
 
     for iteration in range(config.max_iterations):
-        iter_info: dict = {"iteration": iteration, "hack_reward": None, "fix_applied": False}
+        iter_info: dict = {
+            "iteration": iteration,
+            "hack_reward": None,
+            "fix_applied": False,
+            "replay_attempted": False,
+            "replay_reward": None,
+        }
         logger.info("=== Iteration %d ===", iteration)
 
         if reuse_hack is not None:
@@ -170,12 +227,19 @@ async def harden_task(config: HardenConfig) -> dict:
                 hacker_instruction = build_hacker_instruction(original_instruction, oracle=config.oracle)
                 replace_instruction(hacker_parent, config.task_id, hacker_instruction)
 
+                hacker_privileged_modified = False
+                if config.hacker_privileged:
+                    if prepare_privileged_hacker_environment(hacker_parent, config.task_id):
+                        append_to_instruction(hacker_parent, config.task_id, HACKER_PRIVILEGED_HINT)
+                        hacker_privileged_modified = True
+
                 all_failed = failed_hack_trials + attempt_failed_trials
-                hacker_dockerfile_modified = (config.hacker_feedback and bool(all_failed))
-                if hacker_dockerfile_modified:
+                hacker_feedback_modified = (config.hacker_feedback and bool(all_failed))
+                if hacker_feedback_modified:
                     prepare_hacker_environment(hacker_parent, config.task_id, all_failed)
                     append_to_instruction(hacker_parent, config.task_id, HACKER_FEEDBACK_HINT)
 
+                hacker_dockerfile_modified = hacker_privileged_modified or hacker_feedback_modified
                 hacker_needs_rebuild = hacker_dockerfile_modified or hardened_dirty
                 hack_reward, hacker_trial = await run_hacker(
                     hacker_parent,
@@ -294,13 +358,37 @@ async def harden_task(config: HardenConfig) -> dict:
 
                 if solver_reward >= config.solver_threshold:
                     logger.info("Fix validated — solver passes (reward=%.2f).", solver_reward)
-                    update_hardened(hardened_task_dir, fixer_trial)
-                    fix_applied = True
-                    hardened_dirty = True
-                    previous_failure = None
-                    previous_fixer_trial = None
-                    previous_solver_trial = None
-                    legitimate_streak = 0
+
+                    replay_reward: float | None = None
+                    if config.replay_enabled:
+                        iter_info["replay_attempted"] = True
+                        replay_reward = await _run_targeted_replay(
+                            config, hardened_task_dir, fixer_trial, hack_summary,
+                            original_instruction, output, harden_image, iteration,
+                        )
+                        iter_info["replay_reward"] = replay_reward
+
+                    if replay_reward is not None and replay_reward >= config.hack_threshold:
+                        logger.warning("Targeted replay reproduced exploit (reward=%.2f). Rejecting fix.",
+                                       replay_reward)
+                        previous_failure = (
+                            f"PREVIOUS FIX WAS INSUFFICIENT — solver accepted the fix, but a "
+                            f"targeted-replay agent reproduced the exploit on the patched task "
+                            f"(reward={replay_reward:.2f} >= threshold={config.hack_threshold:.2f}). "
+                            f"The fix was too narrow — widen it so the specific exploit no longer works."
+                        )
+                        previous_fixer_trial = fixer_trial
+                        previous_solver_trial = None
+                        legitimate_streak = 0
+                        iter_info["outcome"] = "replay_broke_fix"
+                    else:
+                        update_hardened(hardened_task_dir, fixer_trial)
+                        fix_applied = True
+                        hardened_dirty = True
+                        previous_failure = None
+                        previous_fixer_trial = None
+                        previous_solver_trial = None
+                        legitimate_streak = 0
                 else:
                     logger.warning("Fix broke solver (reward=%.2f < %.2f). Reverting.",
                                    solver_reward, config.solver_threshold)
