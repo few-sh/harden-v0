@@ -237,7 +237,9 @@ def prepare_fixer_environment(
         '  find / -maxdepth 3 -name "$d" -type d -exec rm -rf {} + 2>/dev/null || true\n'
         "done\n"
         "mkdir -p /logs/artifacts\n"
-        f"cp -r {staging}/* /logs/artifacts/\n"
+        # `.` trick + cp -a: preserves dotfiles + permissions. `cp -r staging/*`
+        # would silently drop .gitignore / .env / .cargo/ on round-trip.
+        f"cp -a {staging}/. /logs/artifacts/\n"
         f"rm -rf {staging}\n"
         "pip install pytest -q 2>/dev/null || true\n"
         "git config --global user.name harden\n"

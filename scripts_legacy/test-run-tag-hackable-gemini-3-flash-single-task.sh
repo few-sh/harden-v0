@@ -1,0 +1,1 @@
+cd "$(dirname "$0")/.." && uv run python harden.py --tasks-dir ../../datasets/tag_hackable_2026_02_09_dataset_tasks --task-ids adaptive-rejection-sampler -c ../../datasets/gemini-terminus2-harden.yaml --solver-privileged --max-concurrent 10

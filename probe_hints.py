@@ -8,8 +8,8 @@ import sys
 import time
 from pathlib import Path
 
-ROOT = Path("/lambda/nfs/reward-hacking/harbor")
-sys.path.insert(0, str(ROOT / "harden-kb"))
+REPO_ROOT = Path(__file__).resolve().parent
+sys.path.insert(0, str(REPO_ROOT))
 
 from harden.agent import run_hacker
 from harden.instructions import build_hacker_instruction, build_hinted_hacker_instruction
@@ -176,10 +176,10 @@ async def main():
     parser.add_argument("--task-id", required=True)
     parser.add_argument("--envs", default="pristine,propagated",
                         help="Comma-separated: pristine, propagated, or both")
-    parser.add_argument("--pristine-tasks-dir", type=Path,
-                        default=ROOT / "datasets" / "kernelbench")
-    parser.add_argument("--propagated-tasks-dir", type=Path,
-                        default=ROOT / "harden-kb" / "outputs" / "propagated_l1")
+    parser.add_argument("--pristine-tasks-dir", type=Path, required=True,
+                        help="Baseline task dataset (e.g. .../datasets/kernelbench)")
+    parser.add_argument("--propagated-tasks-dir", type=Path, required=True,
+                        help="Hardened/propagated task dataset to probe")
     parser.add_argument("--hints-dir", type=Path, required=True)
     parser.add_argument("--hint-ids", type=str, default=None,
                         help="Comma-separated hint IDs to run (default: all)")
@@ -208,7 +208,7 @@ async def main():
         sys.exit(1)
 
     output_dir = args.output_dir or (
-        ROOT / "harden-kb" / "outputs" / f"hint_probe_{time.strftime('%Y%m%d_%H%M%S')}"
+        REPO_ROOT / "outputs" / f"hint_probe_{time.strftime('%Y%m%d_%H%M%S')}"
     )
     output_dir.mkdir(parents=True, exist_ok=True)
 

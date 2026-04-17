@@ -1,4 +1,4 @@
-cd ~/truthserum/slime-internal/harden \
+cd "$(dirname "$0")/.." \
 && uv run python harden.py --tasks-dir ../../datasets/tag_hackable_2026_03_30_dataset_tasks_delta \
 --all \
 -c ../../datasets/sonnet-terminus2-harden.yaml \
