@@ -36,22 +36,22 @@ def _run(cmd: list[str], cwd: Path | None = None, check: bool = True) -> subproc
     )
 
 
-def _port_is_free(port: int) -> bool:
+def _port_is_free(port: int, bind_ip: str) -> bool:
     # SO_REUSEADDR so TIME_WAIT leftovers from prior daemons don't mark us busy.
     # `git daemon --reuseaddr` does the same, so this check matches what the
     # daemon will actually see when it binds.
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
-            s.bind(("0.0.0.0", port))
+            s.bind((bind_ip, port))
         except OSError:
             return False
     return True
 
 
-def _pick_port(preferred: int, max_tries: int = 50) -> int:
+def _pick_port(preferred: int, bind_ip: str, max_tries: int = 50) -> int:
     for candidate in range(preferred, preferred + max_tries):
-        if _port_is_free(candidate):
+        if _port_is_free(candidate, bind_ip):
             if candidate != preferred:
                 logger.warning(
                     "Pool port %d busy; using %d instead", preferred, candidate
@@ -60,6 +60,26 @@ def _pick_port(preferred: int, max_tries: int = 50) -> int:
     raise RuntimeError(
         f"No free port in {preferred}..{preferred + max_tries - 1} for git daemon"
     )
+
+
+def _detect_docker_bridge_ip() -> str | None:
+    """Return the docker0 bridge IP, or None if unavailable.
+
+    Bind target for the git daemon: this IP is what `host.docker.internal`
+    resolves to inside containers that set `extra_hosts: host-gateway` —
+    verified empirically on both the default bridge and user-defined compose
+    bridges on Linux Docker. Binding here (instead of 0.0.0.0) closes the
+    LAN-facing attack surface of the receive-pack-enabled daemon.
+    """
+    try:
+        proc = subprocess.run(
+            ["ip", "-4", "-o", "addr", "show", "docker0"],
+            capture_output=True, text=True, check=True,
+        )
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return None
+    match = re.search(r"inet (\d+\.\d+\.\d+\.\d+)/", proc.stdout)
+    return match.group(1) if match else None
 
 
 class PoolServer:
@@ -75,6 +95,7 @@ class PoolServer:
         self.requested_port = int(port)
         self.bootstrap_from = Path(bootstrap_from)
         self.port: int | None = None
+        self.bind_ip: str | None = None
         self._daemon: subprocess.Popen | None = None
         self._bootstrap_sha: str | None = None
 
@@ -99,7 +120,17 @@ class PoolServer:
         ).stdout.strip().splitlines()
         if root:
             self._bootstrap_sha = root[0]
-        self.port = _pick_port(self.requested_port)
+        bridge_ip = _detect_docker_bridge_ip()
+        if bridge_ip:
+            self.bind_ip = bridge_ip
+            logger.info("Binding git daemon to docker bridge %s", self.bind_ip)
+        else:
+            self.bind_ip = "0.0.0.0"
+            logger.warning(
+                "Could not detect docker0 bridge IP; falling back to 0.0.0.0 "
+                "(LAN-exposed). Firewall the port off from untrusted networks."
+            )
+        self.port = _pick_port(self.requested_port, self.bind_ip)
         self._launch_daemon()
 
     def __enter__(self) -> "PoolServer":
@@ -164,16 +195,15 @@ class PoolServer:
         logger.info("Pool bootstrapped at %s", self.bare_path)
 
     def _launch_daemon(self) -> None:
-        # SECURITY NOTE: listens on 0.0.0.0 with receive-pack enabled and no
-        # authentication. This is necessary for container reachability via the
-        # Docker bridge gateway (containers cannot reach 127.0.0.1 on the host).
-        # Anyone with network access to the port can push arbitrary commits into
-        # the pool — which will then be executed by fixer containers. Run only
-        # on hosts where the port is firewalled off from untrusted networks.
+        # SECURITY NOTE: receive-pack is enabled with no authentication — anyone
+        # who can reach the port can push arbitrary commits that fixer containers
+        # later execute. We bind to the docker bridge IP by default (closes LAN
+        # exposure while preserving container reachability via host-gateway).
+        # Falls back to 0.0.0.0 if docker0 isn't detectable.
         cmd = [
             "git", "daemon",
             "--reuseaddr",
-            "--listen=0.0.0.0",
+            f"--listen={self.bind_ip}",
             f"--port={self.port}",
             f"--base-path={self.pool_parent}",
             "--export-all",
@@ -187,12 +217,14 @@ class PoolServer:
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
-        # Wait briefly for the socket to come up.
+        # Connect check uses the actual bind IP (not 127.0.0.1): when bound to
+        # docker0 specifically, loopback won't reach the listener.
+        probe_ip = self.bind_ip if self.bind_ip != "0.0.0.0" else "127.0.0.1"
         deadline = time.monotonic() + 5.0
         while time.monotonic() < deadline:
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
                 try:
-                    s.connect(("127.0.0.1", self.port))
+                    s.connect((probe_ip, self.port))
                     break
                 except OSError:
                     time.sleep(0.1)
@@ -202,7 +234,7 @@ class PoolServer:
 
         # Sanity: ensure ls-remote works.
         proc = _run(
-            ["git", "ls-remote", f"git://127.0.0.1:{self.port}/pool.git"],
+            ["git", "ls-remote", f"git://{probe_ip}:{self.port}/pool.git"],
             check=False,
         )
         if proc.returncode != 0:
@@ -313,3 +345,72 @@ def read_last_seen_sha(task_output_dir: Path) -> str | None:
 def write_last_seen_sha(task_output_dir: Path, sha: str) -> None:
     task_output_dir.mkdir(parents=True, exist_ok=True)
     (task_output_dir / "pool_sha.txt").write_text(sha + "\n")
+
+
+class PoolCursor:
+    """State machine for one task's position in the pool.
+
+    Owns the advance/persist invariant that was scattered across harden_task:
+      - in-memory SHA: the most recent pool commit this task has been shown.
+      - on-disk SHA  : what `pool_sha.txt` holds; updated only at commit points
+                       (pool_sync_noop, legitimate, or validated fix_applied).
+                       An iter that crashes mid-way does not silently mark pool
+                       commits as seen.
+    """
+
+    def __init__(
+        self,
+        pool_server: "PoolServer",
+        task_output_dir: Path,
+        task_id: str,
+    ) -> None:
+        self._pool_server = pool_server
+        self._task_output_dir = task_output_dir
+        self._task_id = task_id
+        seen = read_last_seen_sha(task_output_dir)
+        if seen is None:
+            # Fresh task: start at the pool's root so iter 0 sees ALL prior
+            # defenses as "advance" and catches up rather than attacking a
+            # pre-hardened pool from scratch.
+            seen = pool_server.bootstrap_sha
+            write_last_seen_sha(task_output_dir, seen)
+        self._sha: str = seen
+
+    @property
+    def sha(self) -> str:
+        return self._sha
+
+    def iter_start(self) -> tuple[bool, str, str, str]:
+        """Compute pool state for this iteration and bump the in-memory cursor.
+
+        Returns (pool_advanced, pool_log, previous_sha, current_sha).
+        Does NOT persist — caller invokes `persist()` at commit points.
+        """
+        current = get_pool_head(self._pool_server.bare_path)
+        previous = self._sha
+        advanced = current != previous
+        log = (
+            get_pool_log_since(self._pool_server.bare_path, previous)
+            if advanced else ""
+        )
+        self._sha = current
+        return advanced, log, previous, current
+
+    def advance_to_own_commit_if_newer(self) -> str | None:
+        """If our most-recent pool commit is strictly newer than the in-memory
+        cursor, advance to it; returns the SHA we advanced to, else None.
+
+        Prevents next iter from skip-hacking to self-ack our own push, while
+        still triggering skip-hacker when a concurrent task's commit is ahead.
+        """
+        own = get_latest_own_commit(self._pool_server.bare_path, self._task_id)
+        if own and own != self._sha and is_ancestor(
+            self._pool_server.bare_path, self._sha, own,
+        ):
+            self._sha = own
+            return own
+        return None
+
+    def persist(self) -> None:
+        """Flush the in-memory cursor to pool_sha.txt."""
+        write_last_seen_sha(self._task_output_dir, self._sha)

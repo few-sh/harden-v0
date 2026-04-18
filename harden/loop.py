@@ -27,15 +27,7 @@ from .instructions import (
     build_hacker_instruction,
     build_targeted_replay_instruction,
 )
-from .pool import (
-    PoolServer,
-    get_latest_own_commit,
-    get_pool_head,
-    get_pool_log_since,
-    is_ancestor,
-    read_last_seen_sha,
-    write_last_seen_sha,
-)
+from .pool import PoolCursor, PoolServer
 from .trajectory import extract_hack_summary
 from .workspace import (
     append_to_instruction,
@@ -135,26 +127,6 @@ async def _run_solver(
     )
 
 
-def _advance_pool_cursor(
-    pool_server: PoolServer,
-    last_seen_sha: str,
-) -> tuple[bool, str, str, str]:
-    """Compute pool-advance state at iter start.
-
-    Returns (pool_advanced, pool_log, previous_last_seen, current_pool_sha).
-    Caller updates in-memory last_seen_sha = current_pool_sha and persists at
-    commit points (not here) so an iter that crashes mid-way doesn't silently
-    mark pool commits as "seen".
-    """
-    current_pool_sha = get_pool_head(pool_server.bare_path)
-    pool_advanced = current_pool_sha != last_seen_sha
-    pool_log = (
-        get_pool_log_since(pool_server.bare_path, last_seen_sha)
-        if pool_advanced else ""
-    )
-    return pool_advanced, pool_log, last_seen_sha, current_pool_sha
-
-
 def _validate_task_dir(task_dir: Path) -> None:
     """Fail fast if the task dir is missing required pieces."""
     if not task_dir.is_dir():
@@ -243,17 +215,11 @@ async def harden_task(
     # Once hardened/ diverges from the base image, every build must use force_build + harden image.
     hardened_dirty: bool = False
 
-    # Pooled (jumper) state.
-    last_seen_sha: str | None = None
+    # Pooled (jumper) state — PoolCursor owns the advance/persist invariant.
+    pool_cursor: PoolCursor | None = None
     if pooled:
-        last_seen_sha = read_last_seen_sha(config.task_output_dir)
-        if last_seen_sha is None:
-            # New task: init to the pool's root commit so iter 0 sees ALL prior
-            # defenses as "advance" and starts by catching up rather than
-            # attacking an already-hardened pool.
-            last_seen_sha = pool_server.bootstrap_sha
-            write_last_seen_sha(config.task_output_dir, last_seen_sha)
-        logger.info("Pooled mode: last_seen pool SHA = %s", last_seen_sha[:8])
+        pool_cursor = PoolCursor(pool_server, config.task_output_dir, config.task_id)
+        logger.info("Pooled mode: last_seen pool SHA = %s", pool_cursor.sha[:8])
 
     for iteration in range(config.max_iterations):
         iter_info: dict = {
@@ -265,18 +231,15 @@ async def harden_task(
         }
         logger.info("=== Iteration %d ===", iteration)
 
-        # Pool advance check (pooled mode only). Done at iter start so skip-decision
-        # sees any pushes from concurrent fixers that completed during the last iter.
-        # The previous last_seen is passed to the fixer prompt (so `git diff X..HEAD`
-        # works); the in-memory cursor is bumped now, but we don't persist it to
-        # disk until a commit point so a crash mid-iter doesn't silently "consume"
+        # Pool advance check (pooled mode only). iter_start() bumps the in-memory
+        # cursor but does not persist — a crash mid-iter won't silently "consume"
         # pool commits we never actually integrated.
         pool_advanced = False
         pool_log = ""
-        previous_last_seen = last_seen_sha or ""
-        if pooled:
+        previous_last_seen = ""
+        if pool_cursor is not None:
             pool_advanced, pool_log, previous_last_seen, current_pool_sha = (
-                _advance_pool_cursor(pool_server, last_seen_sha)
+                pool_cursor.iter_start()
             )
             iter_info["pool_sha_start"] = current_pool_sha
             iter_info["pool_advanced"] = pool_advanced
@@ -287,7 +250,6 @@ async def harden_task(
                 )
                 # Pool situation changed; the reused hack may no longer apply.
                 reuse_hack = None
-            last_seen_sha = current_pool_sha
 
         if pool_advanced:
             hack_summary = "(no new hack this iteration — the shared pool has advanced; see POOL_ADVANCED section)"
@@ -415,8 +377,8 @@ async def harden_task(
                     previous_solver_trial = None
                     legitimate_streak = 0
                     # Persist: we've ack'd the pool advance (fixer decided no-op).
-                    if pooled:
-                        write_last_seen_sha(config.task_output_dir, last_seen_sha)
+                    if pool_cursor is not None:
+                        pool_cursor.persist()
                     result["iterations"].append(iter_info)
                     continue
                 else:
@@ -441,8 +403,8 @@ async def harden_task(
                     previous_failure = None
                     previous_fixer_trial = None
                     previous_solver_trial = None
-                    if pooled:
-                        write_last_seen_sha(config.task_output_dir, last_seen_sha)
+                    if pool_cursor is not None:
+                        pool_cursor.persist()
                     result["iterations"].append(iter_info)
                     continue
                 legitimate_streak += 1
@@ -450,8 +412,8 @@ async def harden_task(
                             legitimate_streak, config.legitimate_threshold)
                 iter_info["outcome"] = "legitimate"
                 iter_info["fix_applied"] = False
-                if pooled:
-                    write_last_seen_sha(config.task_output_dir, last_seen_sha)
+                if pool_cursor is not None:
+                    pool_cursor.persist()
                 if legitimate_streak >= config.legitimate_threshold:
                     logger.info("Confirmed legitimate after %d consecutive flags. Task is robust.",
                                 config.legitimate_threshold)
@@ -513,23 +475,14 @@ async def harden_task(
                         previous_fixer_trial = None
                         previous_solver_trial = None
                         legitimate_streak = 0
-                        if pooled:
-                            # Advance last_seen to OUR most recent pool commit
-                            # (if any). Prevents next iter from burning a
-                            # pool-sync cycle just to ack our own push. If
-                            # another task pushed between our commit and now,
-                            # HEAD is still ahead → next iter correctly skips.
-                            # But only advance *forward*: `get_latest_own_commit`
-                            # returns our most-recent-ever, which may be older
-                            # than current last_seen_sha if we didn't push this
-                            # iter (would re-show already-integrated commits).
-                            own_sha = get_latest_own_commit(pool_server.bare_path, config.task_id)
-                            if own_sha and own_sha != last_seen_sha and is_ancestor(
-                                pool_server.bare_path, last_seen_sha, own_sha,
-                            ):
-                                last_seen_sha = own_sha
+                        if pool_cursor is not None:
+                            # Prevents next iter from burning a pool-sync cycle
+                            # just to ack our own push; `advance_...if_newer`
+                            # is a no-op when we didn't push this iter.
+                            own_sha = pool_cursor.advance_to_own_commit_if_newer()
+                            if own_sha:
                                 iter_info["pool_own_commit"] = own_sha
-                            write_last_seen_sha(config.task_output_dir, last_seen_sha)
+                            pool_cursor.persist()
                 else:
                     logger.warning("Fix broke solver (reward=%.2f < %.2f). Reverting.",
                                    solver_reward, config.solver_threshold)
