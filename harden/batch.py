@@ -85,23 +85,10 @@ async def harden_batch(config: BatchHardenConfig) -> list[dict]:
         total, config.max_concurrent_containers, config.oracle,
     )
 
-    # Pool server (jumper mode) — single instance shared by all tasks in the batch.
-    pool_server: PoolServer | None = None
-    if config.pool_enabled:
-        if config.pool_bootstrap_dir is None:
-            raise ValueError("pool_enabled requires pool_bootstrap_dir on BatchHardenConfig")
-        pool_server = PoolServer(
-            pool_parent=config.output_dir,
-            port=config.pool_port,
-            bootstrap_from=Path(config.pool_bootstrap_dir),
-        )
-        pool_server.start()
-        logger.info("Pool server up at %s", pool_server.upstream_url)
-
     progress = {"done": 0, "total": total}
     progress_lock = asyncio.Lock()
 
-    async def _run_one(task_id: str) -> dict:
+    async def _run_one(task_id: str, pool_server: PoolServer | None) -> dict:
         # Stagger container starts to avoid thundering herd on batch launch.
         await asyncio.sleep(random.uniform(0, 10))
         async with semaphore:
@@ -127,11 +114,22 @@ async def harden_batch(config: BatchHardenConfig) -> list[dict]:
             )
             return result
 
-    try:
-        results = await asyncio.gather(*[_run_one(task_id) for task_id in tasks_to_run])
-    finally:
-        if pool_server is not None:
-            pool_server.stop()
+    if config.pool_enabled:
+        if config.pool_bootstrap_dir is None:
+            raise ValueError("pool_enabled requires pool_bootstrap_dir on BatchHardenConfig")
+        with PoolServer(
+            pool_parent=config.output_dir,
+            port=config.pool_port,
+            bootstrap_from=Path(config.pool_bootstrap_dir),
+        ) as pool_server:
+            logger.info("Pool server up at %s", pool_server.upstream_url)
+            results = await asyncio.gather(
+                *[_run_one(t, pool_server) for t in tasks_to_run]
+            )
+    else:
+        results = await asyncio.gather(
+            *[_run_one(t, None) for t in tasks_to_run]
+        )
 
     _print_summary(results, config)
     return list(results)

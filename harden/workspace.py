@@ -201,30 +201,36 @@ def _add_extra_hosts_to_compose(compose_path: Path) -> None:
 
     Adds `extra_hosts: - "host.docker.internal:host-gateway"` so pool URLs of
     the form `git://host.docker.internal:<port>/` resolve. Idempotent.
+
+    Requires Linux Docker Engine >= 20.10 (the `host-gateway` special value).
+    On older Docker the container's `host.docker.internal` won't resolve and
+    the pool clone will fail.
     """
     if not compose_path.is_file():
-        logger.warning(
-            "docker-compose.yaml missing at %s — pool clone will likely fail", compose_path
+        raise RuntimeError(
+            f"docker-compose.yaml missing at {compose_path} — cannot configure pool access"
         )
-        return
-    try:
-        data = yaml.safe_load(compose_path.read_text()) or {}
-        services = data.setdefault("services", {})
-        main = services.setdefault("main", {})
-        hosts = main.get("extra_hosts") or []
-        if isinstance(hosts, dict):
-            # `extra_hosts: {host.docker.internal: host-gateway}` form.
-            hosts = [f"{k}:{v}" for k, v in hosts.items()]
-        entry = "host.docker.internal:host-gateway"
-        if entry not in hosts:
-            hosts.append(entry)
-        main["extra_hosts"] = hosts
-        compose_path.write_text(yaml.safe_dump(data, sort_keys=False))
-    except Exception as e:
-        logger.warning(
-            "Failed to add extra_hosts to %s: %s — fixer may not reach the pool",
-            compose_path, e,
+    data = yaml.safe_load(compose_path.read_text()) or {}
+    services = data.get("services")
+    if not isinstance(services, dict) or "main" not in services:
+        raise RuntimeError(
+            f"docker-compose.yaml at {compose_path} has no `services.main` entry; "
+            f"pool access requires a `main` service to attach extra_hosts to"
         )
+    main = services["main"]
+    if not isinstance(main, dict):
+        raise RuntimeError(
+            f"docker-compose.yaml at {compose_path}: `services.main` must be a mapping"
+        )
+    hosts = main.get("extra_hosts") or []
+    if isinstance(hosts, dict):
+        # `extra_hosts: {host.docker.internal: host-gateway}` form.
+        hosts = [f"{k}:{v}" for k, v in hosts.items()]
+    entry = "host.docker.internal:host-gateway"
+    if entry not in hosts:
+        hosts.append(entry)
+    main["extra_hosts"] = hosts
+    compose_path.write_text(yaml.safe_dump(data, sort_keys=False))
 
 
 def prepare_fixer_environment(

@@ -9,6 +9,7 @@ from pathlib import Path
 from .batch import harden_batch
 from .config import DEFAULT_TASKS_DIR, BatchHardenConfig, HardenConfig
 from .loop import harden_task
+from .pool import PoolServer
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -201,21 +202,15 @@ def _run_single(args: argparse.Namespace) -> None:
     config = HardenConfig(task_id=args.task_id, **_config_kwargs(args))
 
     async def _go():
-        pool_server = None
-        if config.pool_enabled:
-            from .pool import PoolServer
-            pool_server = PoolServer(
-                pool_parent=config.output_dir,
-                port=config.pool_port,
-                bootstrap_from=config.pool_bootstrap_dir,
-            )
-            pool_server.start()
+        if not config.pool_enabled:
+            return await harden_task(config, pool_server=None)
+        with PoolServer(
+            pool_parent=config.output_dir,
+            port=config.pool_port,
+            bootstrap_from=config.pool_bootstrap_dir,
+        ) as pool_server:
             logging.info("Pool server up at %s", pool_server.upstream_url)
-        try:
             return await harden_task(config, pool_server=pool_server)
-        finally:
-            if pool_server is not None:
-                pool_server.stop()
 
     result = asyncio.run(_go())
 

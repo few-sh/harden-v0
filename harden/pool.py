@@ -13,6 +13,7 @@ commit logs for prompts. Fixers never call into this module.
 from __future__ import annotations
 
 import logging
+import re
 import shutil
 import socket
 import subprocess
@@ -99,6 +100,13 @@ class PoolServer:
         self.port = _pick_port(self.requested_port)
         self._launch_daemon()
 
+    def __enter__(self) -> "PoolServer":
+        self.start()
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self.stop()
+
     @property
     def bootstrap_sha(self) -> str:
         if self._bootstrap_sha is None:
@@ -154,6 +162,12 @@ class PoolServer:
         logger.info("Pool bootstrapped at %s", self.bare_path)
 
     def _launch_daemon(self) -> None:
+        # SECURITY NOTE: listens on 0.0.0.0 with receive-pack enabled and no
+        # authentication. This is necessary for container reachability via the
+        # Docker bridge gateway (containers cannot reach 127.0.0.1 on the host).
+        # Anyone with network access to the port can push arbitrary commits into
+        # the pool — which will then be executed by fixer containers. Run only
+        # on hosts where the port is firewalled off from untrusted networks.
         cmd = [
             "git", "daemon",
             "--reuseaddr",
@@ -237,12 +251,15 @@ def get_latest_own_commit(bare_path: Path, task_id: str) -> str | None:
     The fixer's git author is set to `harden-fixer-<task_id>` in the container
     entrypoint (see workspace.prepare_fixer_environment). Rebased commits keep
     their author, so this still works after pull --rebase.
+
+    Anchors the pattern at the end-of-name boundary (" <") so task_id "task-1"
+    does not match commits from "task-10".
     """
-    author = f"harden-fixer-{task_id}"
+    author_pattern = f"harden-fixer-{re.escape(task_id)} <"
     proc = _run(
         [
             "git", "--git-dir", str(bare_path),
-            "log", f"--author={author}", "-1", "--format=%H",
+            "log", f"--author={author_pattern}", "-1", "--format=%H",
         ],
         check=False,
     )

@@ -134,6 +134,26 @@ async def _run_solver(
     )
 
 
+def _advance_pool_cursor(
+    pool_server: PoolServer,
+    last_seen_sha: str,
+) -> tuple[bool, str, str, str]:
+    """Compute pool-advance state at iter start.
+
+    Returns (pool_advanced, pool_log, previous_last_seen, current_pool_sha).
+    Caller updates in-memory last_seen_sha = current_pool_sha and persists at
+    commit points (not here) so an iter that crashes mid-way doesn't silently
+    mark pool commits as "seen".
+    """
+    current_pool_sha = get_pool_head(pool_server.bare_path)
+    pool_advanced = current_pool_sha != last_seen_sha
+    pool_log = (
+        get_pool_log_since(pool_server.bare_path, last_seen_sha)
+        if pool_advanced else ""
+    )
+    return pool_advanced, pool_log, last_seen_sha, current_pool_sha
+
+
 def _validate_task_dir(task_dir: Path) -> None:
     """Fail fast if the task dir is missing required pieces."""
     if not task_dir.is_dir():
@@ -246,26 +266,27 @@ async def harden_task(
 
         # Pool advance check (pooled mode only). Done at iter start so skip-decision
         # sees any pushes from concurrent fixers that completed during the last iter.
+        # The previous last_seen is passed to the fixer prompt (so `git diff X..HEAD`
+        # works); the in-memory cursor is bumped now, but we don't persist it to
+        # disk until a commit point so a crash mid-iter doesn't silently "consume"
+        # pool commits we never actually integrated.
         pool_advanced = False
         pool_log = ""
+        previous_last_seen = last_seen_sha or ""
         if pooled:
-            current_pool_sha = get_pool_head(pool_server.bare_path)
-            pool_advanced = current_pool_sha != last_seen_sha
+            pool_advanced, pool_log, previous_last_seen, current_pool_sha = (
+                _advance_pool_cursor(pool_server, last_seen_sha)
+            )
             iter_info["pool_sha_start"] = current_pool_sha
             iter_info["pool_advanced"] = pool_advanced
             if pool_advanced:
-                pool_log = get_pool_log_since(pool_server.bare_path, last_seen_sha)
                 logger.info(
                     "Pool advanced %s..%s — skipping hacker.",
-                    last_seen_sha[:8], current_pool_sha[:8],
+                    previous_last_seen[:8], current_pool_sha[:8],
                 )
                 # Pool situation changed; the reused hack may no longer apply.
                 reuse_hack = None
-            # Acknowledge what we've seen at iter start; prevents re-skipping hacker
-            # next iter if the fixer didn't push further advances. Fixer's own pushes
-            # are picked up by the post-validation refresh below.
             last_seen_sha = current_pool_sha
-            write_last_seen_sha(config.task_output_dir, last_seen_sha)
 
         if pool_advanced:
             hack_summary = "(no new hack this iteration — the shared pool has advanced; see POOL_ADVANCED section)"
@@ -344,7 +365,7 @@ async def harden_task(
             legitimate_marker=config.legitimate_marker,
             pool_enabled=pooled,
             pool_log=pool_log if pool_advanced else None,
-            last_seen_sha=last_seen_sha,
+            last_seen_sha=previous_last_seen,
             task_id=config.task_id,
             iteration=iteration,
         )
@@ -392,6 +413,9 @@ async def harden_task(
                     previous_fixer_trial = None
                     previous_solver_trial = None
                     legitimate_streak = 0
+                    # Persist: we've ack'd the pool advance (fixer decided no-op).
+                    if pooled:
+                        write_last_seen_sha(config.task_output_dir, last_seen_sha)
                     result["iterations"].append(iter_info)
                     continue
                 else:
@@ -408,6 +432,8 @@ async def harden_task(
                             legitimate_streak, config.legitimate_threshold)
                 iter_info["outcome"] = "legitimate"
                 iter_info["fix_applied"] = False
+                if pooled:
+                    write_last_seen_sha(config.task_output_dir, last_seen_sha)
                 if legitimate_streak >= config.legitimate_threshold:
                     logger.info("Confirmed legitimate after %d consecutive flags. Task is robust.",
                                 config.legitimate_threshold)

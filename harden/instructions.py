@@ -282,7 +282,7 @@ _LEGITIMATE_NOTE_SOLVER = (
 )
 
 
-POOL_FIXER_HINT = """
+POOL_FIXER_HINT_TEMPLATE = """
 
 ## Shared defense pool
 
@@ -413,7 +413,7 @@ def build_fixer_instruction(
                 last_seen_short=(last_seen_sha or "")[:8] or "(unknown)",
                 pool_log=pool_log,
             )
-        body += POOL_FIXER_HINT.format(
+        body += POOL_FIXER_HINT_TEMPLATE.format(
             task_id=task_id or "<task>",
             iteration=iteration,
         )

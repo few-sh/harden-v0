@@ -107,13 +107,16 @@ python -m harden --oracle --all --hacker-privileged \
 ### Pooled (jumper) mode
 
 When `--pool-enabled`:
+- **Linux Docker Engine >= 20.10 required** — fixer containers reach the host-side daemon via `host.docker.internal:host-gateway` in docker-compose.yaml, and `host-gateway` is a Linux-only special value added in 20.10.
+- **Security**: the `git daemon` listens on `0.0.0.0` with `--enable=receive-pack` and no authentication, because containers reach the host via the Docker bridge gateway (not loopback). Anyone with network access to the port can push arbitrary commits into the pool — which are then executed by fixer containers. Only run on hosts where the port is firewalled off from untrusted networks.
 - Bootstrap: a fresh bare repo is initialized from `--pool-bootstrap-dir`'s `tests/`; commit message `[bootstrap] from <path>`. If `<output_dir>/pool.git/` already exists, it's reused (so you can pre-populate the pool with any history).
-- Per-task last-seen SHA at `<task_output_dir>/pool_sha.txt`. Initialized to the pool's root (bootstrap) commit for a fresh task so iter 0 catches up to existing defenses via skip-hacker.
+- Per-task last-seen SHA at `<task_output_dir>/pool_sha.txt`. Initialized to the pool's root (bootstrap) commit for a fresh task so iter 0 catches up to existing defenses via skip-hacker. Persisted only at commit points (fix validated, pool-sync no-op, or legitimate flag) — an iteration that crashes does NOT silently mark pool commits as seen.
 - Iteration branches:
   - If pool HEAD advanced beyond last-seen → **skip hacker**, show fixer a git log of new commits. Valid fixer outcomes: port into local, refine pool, or no-op (`outcome: pool_sync_noop`).
   - Else → normal hacker → fixer flow; fixer may additionally push to the pool.
-- Last-seen advance rule: at iter end on fix_applied, `last_seen` is refreshed to our own most recent pool commit (matched by `author=harden-fixer-<task_id>`), NOT current HEAD — this avoids burning the next iter on self-acknowledging our own push, while still triggering skip-hacker if a concurrent task's commit is ahead of ours.
+- Last-seen advance rule: at iter end on fix_applied, `last_seen` is refreshed to our own most recent pool commit (matched by `author=harden-fixer-<task_id>` with trailing " <" anchor so `task-1` doesn't match `task-10`), NOT current HEAD — this avoids burning the next iter on self-acknowledging our own push, while still triggering skip-hacker if a concurrent task's commit is ahead of ours.
 - Concurrency: git's push semantics handle it (non-fast-forward rejection → agent does `git pull --rebase` and retries). No host-side lock.
+- `iter_info["pool_own_commit"]` records the fixer's **most recent** authored commit visible in the pool at iter end on a validated fix — which may be from an earlier iteration if the fixer didn't push this iter but had pushed previously. It is not necessarily the SHA of this iter's push.
 
 ## Outputs
 
