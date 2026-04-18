@@ -231,6 +231,25 @@ def get_pool_log_since(bare_path: Path, since_sha: str, limit: int = 50) -> str:
     return proc.stdout.strip()
 
 
+def get_latest_own_commit(bare_path: Path, task_id: str) -> str | None:
+    """Return the SHA of the most recent pool commit authored by this task's fixer.
+
+    The fixer's git author is set to `harden-fixer-<task_id>` in the container
+    entrypoint (see workspace.prepare_fixer_environment). Rebased commits keep
+    their author, so this still works after pull --rebase.
+    """
+    author = f"harden-fixer-{task_id}"
+    proc = _run(
+        [
+            "git", "--git-dir", str(bare_path),
+            "log", f"--author={author}", "-1", "--format=%H",
+        ],
+        check=False,
+    )
+    sha = proc.stdout.strip()
+    return sha or None
+
+
 def read_last_seen_sha(task_output_dir: Path) -> str | None:
     p = task_output_dir / "pool_sha.txt"
     if not p.is_file():

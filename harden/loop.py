@@ -29,6 +29,7 @@ from .instructions import (
 )
 from .pool import (
     PoolServer,
+    get_latest_own_commit,
     get_pool_head,
     get_pool_log_since,
     read_last_seen_sha,
@@ -468,6 +469,17 @@ async def harden_task(
                         previous_fixer_trial = None
                         previous_solver_trial = None
                         legitimate_streak = 0
+                        if pooled:
+                            # Advance last_seen to OUR most recent pool commit
+                            # (if any). Prevents next iter from burning a
+                            # pool-sync cycle just to ack our own push. If
+                            # another task pushed between our commit and now,
+                            # HEAD is still ahead → next iter correctly skips.
+                            own_sha = get_latest_own_commit(pool_server.bare_path, config.task_id)
+                            if own_sha:
+                                last_seen_sha = own_sha
+                                write_last_seen_sha(config.task_output_dir, last_seen_sha)
+                                iter_info["pool_own_commit"] = own_sha
                 else:
                     logger.warning("Fix broke solver (reward=%.2f < %.2f). Reverting.",
                                    solver_reward, config.solver_threshold)
