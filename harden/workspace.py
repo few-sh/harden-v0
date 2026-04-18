@@ -330,6 +330,10 @@ def prepare_fixer_environment(
     pool_clone_block = ""
     if pool_upstream_url:
         additions.append(f'ENV POOL_UPSTREAM_URL="{pool_upstream_url}"')
+        # Fail-fast: if the pool URL was wired in but we can't reach it after
+        # 5 retries, exit the entrypoint with an error. Running the fixer
+        # against a missing /pool/ would silently mis-execute the prompt's
+        # pool instructions; better to surface the failure on the host.
         pool_clone_block = (
             'if [ -n "$POOL_UPSTREAM_URL" ]; then\n'
             "  rm -rf /pool\n"
@@ -337,15 +341,15 @@ def prepare_fixer_environment(
             '    git clone "$POOL_UPSTREAM_URL" /pool && break\n'
             "    sleep 1\n"
             "  done\n"
-            "  if [ -d /pool/.git ]; then\n"
-            "    (cd /pool && \\\n"
-            "      git config user.email fixer@harden && \\\n"
-            f"      git config user.name \"harden-fixer-{task_id}\" && \\\n"
-            "      git config pull.rebase true)\n"
-            "    git config --global --add safe.directory /pool\n"
-            "  else\n"
-            '    echo "[WARN] Failed to clone pool from $POOL_UPSTREAM_URL" >&2\n'
+            "  if [ ! -d /pool/.git ]; then\n"
+            '    echo "[ERROR] Failed to clone pool from $POOL_UPSTREAM_URL after 5 retries" >&2\n'
+            "    exit 1\n"
             "  fi\n"
+            "  (cd /pool && \\\n"
+            "    git config user.email fixer@harden && \\\n"
+            f"    git config user.name \"harden-fixer-{task_id}\" && \\\n"
+            "    git config pull.rebase true)\n"
+            "  git config --global --add safe.directory /pool\n"
             "fi\n"
         )
 

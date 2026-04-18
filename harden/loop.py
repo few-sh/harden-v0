@@ -150,6 +150,11 @@ async def harden_task(
     and iterations where the pool has advanced since this task's last iteration
     skip the hacker step (treating it as a sync iteration).
     """
+    if config.pool_enabled and pool_server is None:
+        raise ValueError(
+            "config.pool_enabled=True but pool_server was not passed to harden_task. "
+            "Use pool_context() or pass pool_server explicitly."
+        )
     pooled = config.pool_enabled and pool_server is not None
     original_dir = config.task_dir
     _validate_task_dir(original_dir)
@@ -252,7 +257,7 @@ async def harden_task(
                 reuse_hack = None
 
         if pool_advanced:
-            hack_summary = "(no new hack this iteration — the shared pool has advanced; see POOL_ADVANCED section)"
+            hack_summary = "(no new hack this iteration — the shared pool has advanced; see the 'Pool advanced' section)"
             hack_reward = 0.0
             iter_info["outcome_pre_fixer"] = "pool_sync"
         elif reuse_hack is not None:
@@ -446,7 +451,10 @@ async def harden_task(
                     logger.info("Fix validated — solver passes (reward=%.2f).", solver_reward)
 
                     replay_reward: float | None = None
-                    if config.replay_enabled:
+                    # Skip replay on pool-sync iters: hack_summary is a sentinel
+                    # placeholder (no real hack this iter) so replay has nothing
+                    # meaningful to reproduce.
+                    if config.replay_enabled and not pool_advanced:
                         iter_info["replay_attempted"] = True
                         replay_reward = await _run_targeted_replay(
                             config, hardened_task_dir, fixer_trial, hack_summary,

@@ -313,18 +313,24 @@ Commit message format: `[{task_id} iter-{iteration}] <attack_class>: <summary>`.
 Keep the first line short; long rationale goes in the body.
 
 **When to push to the pool vs. keep local in `/logs/artifacts/`:**
-- **Push to pool** if the fix addresses a *general* attack class (e.g., stack-frame
-  inspection, timing monkeypatching). Other tasks benefit immediately.
-- **Keep local** only for fixes that depend on task-specific details (e.g., exact
-  tensor shapes, task-specific reference file contents).
-- When in doubt, push to pool. It is much better to share defenses than to let
+- **Always update your local `/logs/artifacts/tests/` files with your changes first.**
+- **Push to pool as well** if the fix addresses a *general* attack class (e.g., stack-frame
+  inspection, timing monkeypatching) — other tasks benefit immediately.
+- **Do not only push to the pool**: the pool is the canonical repo for shared, task-agnostic defenses,
+  but updating
+- When in doubt, push the improvement to the pool too. It's much better to share defenses than to let
   each task redo the same work.
 
-The pool's `tests/` files (e.g. `tests/eval_kernel.py`) are the canonical defenses.
-If you push an improvement to `/pool/tests/eval_kernel.py`, also copy the new version
-into `/logs/artifacts/tests/eval_kernel.py` for this task's local hardened state:
-  `cp /pool/tests/eval_kernel.py /logs/artifacts/tests/eval_kernel.py`
-then commit the local change as usual.
+**How to propagate changes:**
+- *If your fix generalizes*: update `/logs/artifacts/tests/`, then copy the improved version to the pool (e.g., `/pool/tests/eval_kernel.py`) and push.
+- *For purely local fixes*: only update `/logs/artifacts/tests/` and commit locally.
+
+Example commands for pushing to the pool:
+  `cp /logs/artifacts/tests/eval_kernel.py /pool/tests/eval_kernel.py`
+  `cd /pool && git add -A && git commit -m "[{task_id} iter-{iteration}] <attack_class>: <one-line summary>"`
+  `git push origin main`
+
+Commit your local changes as usual after updating your local files.
 """
 
 

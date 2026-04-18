@@ -115,11 +115,19 @@ class PoolServer:
         # Cache the root commit (the pool's oldest ancestor) — used as the
         # "never seen" sentinel for new tasks so they catch up instead of
         # attacking a pre-hardened pool on iter 0.
-        root = _run(
+        root_proc = _run(
             ["git", "--git-dir", str(self.bare_path), "rev-list", "--max-parents=0", "HEAD"],
-        ).stdout.strip().splitlines()
-        if root:
-            self._bootstrap_sha = root[0]
+            check=False,
+        )
+        root_lines = root_proc.stdout.strip().splitlines() if root_proc.returncode == 0 else []
+        if not root_lines:
+            # Degenerate bare repo (no refs / reused from a failed bootstrap).
+            # Refuse to continue — PoolCursor depends on a valid bootstrap_sha.
+            raise RuntimeError(
+                f"Pool bare repo at {self.bare_path} has no reachable root commit; "
+                f"delete it and rerun, or pre-populate with valid history."
+            )
+        self._bootstrap_sha = root_lines[0]
         bridge_ip = _detect_docker_bridge_ip()
         if bridge_ip:
             self.bind_ip = bridge_ip
