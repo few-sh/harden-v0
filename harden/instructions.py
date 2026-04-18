@@ -401,6 +401,15 @@ def build_fixer_instruction(
     else:
         feedback = ""
 
+    # Strip the task's "## Your Goal" section (speedup-maximization framing
+    # aimed at the legitimate agent) before inlining into the fixer prompt;
+    # the fixer's goal is the template itself, and leaving the original goal
+    # can confuse the fixer into thinking it should help the agent go fast.
+    # Same marker the hacker uses in build_hacker_instruction.
+    marker_pos = original_instruction.find(_OPTIMIZATION_ADDENDUM_MARKER)
+    if marker_pos != -1:
+        original_instruction = original_instruction[:marker_pos].rstrip() + "\n"
+
     template = _FIXER_TEMPLATE_ORACLE if oracle else _FIXER_TEMPLATE_SOLVER
     if legitimate_marker:
         legitimate_note = _LEGITIMATE_NOTE_ORACLE if oracle else _LEGITIMATE_NOTE_SOLVER
