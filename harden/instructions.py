@@ -290,6 +290,16 @@ A shared defense pool is available at `/pool/` — a git working copy tracking
 `origin/main` at a host-side git server. Other tasks' fixers are committing to
 the same remote concurrently.
 
+**What the pool contains.** A mirror of a task's `tests/` directory, with
+exactly the files that form the canonical, task-agnostic defense. The main
+file is `/pool/tests/eval_kernel.py`; other files like `/pool/tests/test.sh`
+and `/pool/tests/reference.py` may also be there. The pool was bootstrapped
+from an already-hardened task, and every subsequent commit in its git history
+is a defense improvement pushed by some other task's fixer. Commits follow
+the format `[<task_id> iter-<N>] <attack_class>: <summary>`, so `git log` is
+effectively a chronological audit of every attack class defended against so
+far across the batch.
+
 Use the pool whenever your fix generalizes beyond this task:
 
 - Inspect state: `cd /pool && git log --oneline`, `git show <sha>`, `cat ...`.
