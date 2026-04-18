@@ -160,6 +160,12 @@ This is the key defense-efficacy signal. A healthy pool should push the distribu
 - **Band is huge** (p10–p90 spans ~10 orders of magnitude). Exploits either max out (10K–10B, occasional overflow to 10⁹⁹) or fail to reach threshold (sub-10). Few attempts land in between.
 - **No monotone decrease over time**. The pool accumulates defenses, but privileged hackers keep finding new attack surfaces at roughly the same rate. Consistent with the "only 1 robust" observation — the system is in stalemate rather than collapsing to robustness.
 
+### Hacker solution code size over time
+
+![Hacker solution.py size over time](hacker_code_len.png)
+
+Top panel = lines in `solution.py`, bottom = bytes. Same rolling window (n=15) as the reward plot. Median grows from ~30 lines / 700 B at batch start to ~45–55 lines / 1.3–1.6 kB by mid-run, with a p90 tail reaching ~90 lines / 3.5 kB around minute 300. Interpretation: as pool defenses accumulate, hackers need slightly more scaffolding (stack-frame walks, monkeypatch chains, caller inspection) to land exploits — but the growth is modest, roughly 1.5× not 10×. Consistent with the reward plot: defenses aren't shrinking exploit success, they're just raising the floor on exploit complexity.
+
 ---
 
 ## Attack classes observed (inferred from commit messages)
