@@ -108,7 +108,8 @@ def _build_parser() -> argparse.ArgumentParser:
     # Jumper / pooled mode
     parser.add_argument("--pool-enabled", action="store_true",
                         help="Enable jumper pooled mode: share a defense repo across tasks via "
-                             "a host-side git daemon. Fixer containers clone/push to the pool.")
+                             "a host-side git daemon. Fixer containers clone/push to the pool. "
+                             "Linux Docker Engine >= 20.10 only (uses extra_hosts:host-gateway).")
     parser.add_argument("--pool-bootstrap-dir", type=Path, default=None,
                         help="Hardened task dir to bootstrap the pool from (required if --pool-enabled).")
     parser.add_argument("--pool-port", type=int, default=9418,

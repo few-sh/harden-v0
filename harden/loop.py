@@ -262,7 +262,6 @@ async def harden_task(
         if pool_advanced:
             hack_summary = "(no new hack this iteration — the shared pool has advanced; see the 'Pool advanced' section)"
             hack_reward = 0.0
-            iter_info["outcome_pre_fixer"] = "pool_sync"
         elif reuse_hack is not None:
             hack_summary, hack_reward = reuse_hack
             reuse_hack = None
@@ -370,51 +369,42 @@ async def harden_task(
                 fixer_trial, solver_parent, config.task_id,
                 oracle=config.oracle, legitimate_marker=config.legitimate_marker,
             )
+            # Shared pool-sync-noop path: on a pool-advanced iter, either
+            # `no_changes` or `legitimate` from the fixer are valid acks of
+            # the pool advance (nothing to port locally / no hack to legitimize).
+            # Both collapse to the same cleanup + continue.
+            pool_sync_noop_reason: str | None = None
+            if pool_advanced and fix_result == "no_changes":
+                pool_sync_noop_reason = (
+                    "Fixer made no local changes (pool-sync iteration acknowledged)."
+                )
+            elif pool_advanced and fix_result == "legitimate":
+                pool_sync_noop_reason = (
+                    "Fixer marked .legitimate in a pool-sync iter; "
+                    "ignoring (no hack to legitimize)."
+                )
+            if pool_sync_noop_reason is not None:
+                logger.info(pool_sync_noop_reason)
+                iter_info["outcome"] = "pool_sync_noop"
+                reuse_hack = None
+                previous_failure = None
+                previous_fixer_trial = None
+                previous_solver_trial = None
+                legitimate_streak = 0
+                if pool_cursor is not None:
+                    pool_cursor.persist()
+                result["iterations"].append(iter_info)
+                continue
+
             if fix_result == "no_changes":
-                if pool_advanced:
-                    logger.info(
-                        "Fixer made no local changes (pool-sync iteration acknowledged)."
-                    )
-                    iter_info["outcome"] = "pool_sync_noop"
-                    # Valid outcome: fixer inspected the pool advance and decided
-                    # nothing needed porting. Don't treat as failure; don't
-                    # re-attack next iter.
-                    reuse_hack = None
-                    previous_failure = None
-                    previous_fixer_trial = None
-                    previous_solver_trial = None
-                    legitimate_streak = 0
-                    # Persist: we've ack'd the pool advance (fixer decided no-op).
-                    if pool_cursor is not None:
-                        pool_cursor.persist()
-                    result["iterations"].append(iter_info)
-                    continue
-                else:
-                    logger.warning("Fixer did not commit any changes")
-                    previous_failure = (
-                        "Fixer did not commit any changes. You MUST commit: "
-                        "cd /logs/artifacts && git add -A && git commit -m 'fix'"
-                    )
-                    legitimate_streak = 0
-                    iter_info["outcome"] = "no_changes"
+                logger.warning("Fixer did not commit any changes")
+                previous_failure = (
+                    "Fixer did not commit any changes. You MUST commit: "
+                    "cd /logs/artifacts && git add -A && git commit -m 'fix'"
+                )
+                legitimate_streak = 0
+                iter_info["outcome"] = "no_changes"
             elif fix_result == "legitimate":
-                if pool_advanced:
-                    # No actual hack was run this iter — a `.legitimate` marker
-                    # here is meaningless (there's nothing to legitimize).
-                    # Don't bump the streak; just treat as a sync no-op.
-                    logger.warning(
-                        "Fixer marked .legitimate in a pool-sync iter; "
-                        "ignoring (no hack to legitimize)."
-                    )
-                    iter_info["outcome"] = "pool_sync_noop"
-                    reuse_hack = None
-                    previous_failure = None
-                    previous_fixer_trial = None
-                    previous_solver_trial = None
-                    if pool_cursor is not None:
-                        pool_cursor.persist()
-                    result["iterations"].append(iter_info)
-                    continue
                 legitimate_streak += 1
                 logger.info("Fixer marked hack as legitimate (%d/%d).",
                             legitimate_streak, config.legitimate_threshold)
