@@ -17,7 +17,7 @@ from pathlib import Path
 
 from .config import BatchHardenConfig, HardenConfig
 from .loop import harden_task
-from .pool import PoolServer
+from .pool import PoolServer, pool_context
 
 logger = logging.getLogger(__name__)
 
@@ -114,21 +114,9 @@ async def harden_batch(config: BatchHardenConfig) -> list[dict]:
             )
             return result
 
-    if config.pool_enabled:
-        if config.pool_bootstrap_dir is None:
-            raise ValueError("pool_enabled requires pool_bootstrap_dir on BatchHardenConfig")
-        with PoolServer(
-            pool_parent=config.output_dir,
-            port=config.pool_port,
-            bootstrap_from=Path(config.pool_bootstrap_dir),
-        ) as pool_server:
-            logger.info("Pool server up at %s", pool_server.upstream_url)
-            results = await asyncio.gather(
-                *[_run_one(t, pool_server) for t in tasks_to_run]
-            )
-    else:
+    with pool_context(config) as pool_server:
         results = await asyncio.gather(
-            *[_run_one(t, None) for t in tasks_to_run]
+            *[_run_one(t, pool_server) for t in tasks_to_run]
         )
 
     _print_summary(results, config)

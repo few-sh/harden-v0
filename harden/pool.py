@@ -12,6 +12,7 @@ commit logs for prompts. Fixers never call into this module.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import re
 import shutil
@@ -19,6 +20,7 @@ import socket
 import subprocess
 import tempfile
 import time
+from collections.abc import Iterator
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -243,6 +245,39 @@ def get_pool_log_since(bare_path: Path, since_sha: str, limit: int = 50) -> str:
             check=False,
         )
     return proc.stdout.strip()
+
+
+@contextlib.contextmanager
+def pool_context(config) -> Iterator["PoolServer | None"]:
+    """Centralized pool-server setup for callers (batch.py / __main__.py).
+
+    Yields a running PoolServer when `config.pool_enabled`, else None. Raises
+    ValueError if pool_enabled but pool_bootstrap_dir is unset.
+    """
+    if not getattr(config, "pool_enabled", False):
+        yield None
+        return
+    if getattr(config, "pool_bootstrap_dir", None) is None:
+        raise ValueError("pool_enabled requires pool_bootstrap_dir")
+    with PoolServer(
+        pool_parent=Path(config.output_dir),
+        port=config.pool_port,
+        bootstrap_from=Path(config.pool_bootstrap_dir),
+    ) as srv:
+        logger.info("Pool server up at %s", srv.upstream_url)
+        yield srv
+
+
+def is_ancestor(bare_path: Path, ancestor: str, descendant: str) -> bool:
+    """True iff `ancestor` is reachable from `descendant` (i.e., descendant is newer)."""
+    proc = _run(
+        [
+            "git", "--git-dir", str(bare_path),
+            "merge-base", "--is-ancestor", ancestor, descendant,
+        ],
+        check=False,
+    )
+    return proc.returncode == 0
 
 
 def get_latest_own_commit(bare_path: Path, task_id: str) -> str | None:

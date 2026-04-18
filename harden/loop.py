@@ -32,6 +32,7 @@ from .pool import (
     get_latest_own_commit,
     get_pool_head,
     get_pool_log_since,
+    is_ancestor,
     read_last_seen_sha,
     write_last_seen_sha,
 )
@@ -427,6 +428,23 @@ async def harden_task(
                     legitimate_streak = 0
                     iter_info["outcome"] = "no_changes"
             elif fix_result == "legitimate":
+                if pool_advanced:
+                    # No actual hack was run this iter — a `.legitimate` marker
+                    # here is meaningless (there's nothing to legitimize).
+                    # Don't bump the streak; just treat as a sync no-op.
+                    logger.warning(
+                        "Fixer marked .legitimate in a pool-sync iter; "
+                        "ignoring (no hack to legitimize)."
+                    )
+                    iter_info["outcome"] = "pool_sync_noop"
+                    reuse_hack = None
+                    previous_failure = None
+                    previous_fixer_trial = None
+                    previous_solver_trial = None
+                    if pooled:
+                        write_last_seen_sha(config.task_output_dir, last_seen_sha)
+                    result["iterations"].append(iter_info)
+                    continue
                 legitimate_streak += 1
                 logger.info("Fixer marked hack as legitimate (%d/%d).",
                             legitimate_streak, config.legitimate_threshold)
@@ -501,11 +519,17 @@ async def harden_task(
                             # pool-sync cycle just to ack our own push. If
                             # another task pushed between our commit and now,
                             # HEAD is still ahead → next iter correctly skips.
+                            # But only advance *forward*: `get_latest_own_commit`
+                            # returns our most-recent-ever, which may be older
+                            # than current last_seen_sha if we didn't push this
+                            # iter (would re-show already-integrated commits).
                             own_sha = get_latest_own_commit(pool_server.bare_path, config.task_id)
-                            if own_sha:
+                            if own_sha and own_sha != last_seen_sha and is_ancestor(
+                                pool_server.bare_path, last_seen_sha, own_sha,
+                            ):
                                 last_seen_sha = own_sha
-                                write_last_seen_sha(config.task_output_dir, last_seen_sha)
                                 iter_info["pool_own_commit"] = own_sha
+                            write_last_seen_sha(config.task_output_dir, last_seen_sha)
                 else:
                     logger.warning("Fix broke solver (reward=%.2f < %.2f). Reverting.",
                                    solver_reward, config.solver_threshold)
@@ -518,7 +542,10 @@ async def harden_task(
             previous_failure = str(e)
             legitimate_streak = 0
 
-        if not fix_applied:
+        if not fix_applied and not pool_advanced:
+            # Reuse the hack next iter if the fixer failed, but only when we
+            # actually had a hack. On pool-sync iters hack_summary is a
+            # sentinel string — reusing it would hand the next fixer nonsense.
             reuse_hack = (hack_summary, hack_reward)
 
         iter_info["fix_applied"] = fix_applied
