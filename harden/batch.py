@@ -17,6 +17,7 @@ from pathlib import Path
 
 from .config import BatchHardenConfig, HardenConfig
 from .loop import harden_task
+from .pool import PoolServer
 
 logger = logging.getLogger(__name__)
 
@@ -84,6 +85,19 @@ async def harden_batch(config: BatchHardenConfig) -> list[dict]:
         total, config.max_concurrent_containers, config.oracle,
     )
 
+    # Pool server (jumper mode) — single instance shared by all tasks in the batch.
+    pool_server: PoolServer | None = None
+    if config.pool_enabled:
+        if config.pool_bootstrap_dir is None:
+            raise ValueError("pool_enabled requires pool_bootstrap_dir on BatchHardenConfig")
+        pool_server = PoolServer(
+            pool_parent=config.output_dir,
+            port=config.pool_port,
+            bootstrap_from=Path(config.pool_bootstrap_dir),
+        )
+        pool_server.start()
+        logger.info("Pool server up at %s", pool_server.upstream_url)
+
     progress = {"done": 0, "total": total}
     progress_lock = asyncio.Lock()
 
@@ -95,7 +109,7 @@ async def harden_batch(config: BatchHardenConfig) -> list[dict]:
             try:
                 task_config = config.make_task_config(task_id)
                 _save_task_config(task_config)
-                result = await harden_task(task_config)
+                result = await harden_task(task_config, pool_server=pool_server)
             except Exception as e:
                 logger.error("[%s] Failed with exception: %s", task_id, e)
                 result = {"task_id": task_id, "status": "error", "error": str(e)}
@@ -113,7 +127,11 @@ async def harden_batch(config: BatchHardenConfig) -> list[dict]:
             )
             return result
 
-    results = await asyncio.gather(*[_run_one(task_id) for task_id in tasks_to_run])
+    try:
+        results = await asyncio.gather(*[_run_one(task_id) for task_id in tasks_to_run])
+    finally:
+        if pool_server is not None:
+            pool_server.stop()
 
     _print_summary(results, config)
     return list(results)

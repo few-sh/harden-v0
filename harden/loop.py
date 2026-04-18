@@ -27,6 +27,13 @@ from .instructions import (
     build_hacker_instruction,
     build_targeted_replay_instruction,
 )
+from .pool import (
+    PoolServer,
+    get_pool_head,
+    get_pool_log_since,
+    read_last_seen_sha,
+    write_last_seen_sha,
+)
 from .trajectory import extract_hack_summary
 from .workspace import (
     append_to_instruction,
@@ -138,8 +145,18 @@ def _validate_task_dir(task_dir: Path) -> None:
         )
 
 
-async def harden_task(config: HardenConfig) -> dict:
-    """Run the full adversarial hardening loop for a single task."""
+async def harden_task(
+    config: HardenConfig,
+    pool_server: PoolServer | None = None,
+) -> dict:
+    """Run the full adversarial hardening loop for a single task.
+
+    When `config.pool_enabled` AND `pool_server` is provided, the loop runs in
+    pooled (jumper) mode: fixer containers clone/push a shared defense repo,
+    and iterations where the pool has advanced since this task's last iteration
+    skip the hacker step (treating it as a sync iteration).
+    """
+    pooled = config.pool_enabled and pool_server is not None
     original_dir = config.task_dir
     _validate_task_dir(original_dir)
 
@@ -151,6 +168,7 @@ async def harden_task(config: HardenConfig) -> dict:
         "status": "unknown",
         "iterations": [],
         "oracle": config.oracle,
+        "pool_enabled": pooled,
     }
 
     hardened_parent = create_hardened_copy(original_dir, output, resume=config.resume)
@@ -203,6 +221,15 @@ async def harden_task(config: HardenConfig) -> dict:
     # Once hardened/ diverges from the base image, every build must use force_build + harden image.
     hardened_dirty: bool = False
 
+    # Pooled (jumper) state.
+    last_seen_sha: str | None = None
+    if pooled:
+        last_seen_sha = read_last_seen_sha(config.task_output_dir)
+        if last_seen_sha is None:
+            last_seen_sha = get_pool_head(pool_server.bare_path)
+            write_last_seen_sha(config.task_output_dir, last_seen_sha)
+        logger.info("Pooled mode: last_seen pool SHA = %s", last_seen_sha[:8])
+
     for iteration in range(config.max_iterations):
         iter_info: dict = {
             "iteration": iteration,
@@ -213,7 +240,34 @@ async def harden_task(config: HardenConfig) -> dict:
         }
         logger.info("=== Iteration %d ===", iteration)
 
-        if reuse_hack is not None:
+        # Pool advance check (pooled mode only). Done at iter start so skip-decision
+        # sees any pushes from concurrent fixers that completed during the last iter.
+        pool_advanced = False
+        pool_log = ""
+        if pooled:
+            current_pool_sha = get_pool_head(pool_server.bare_path)
+            pool_advanced = current_pool_sha != last_seen_sha
+            iter_info["pool_sha_start"] = current_pool_sha
+            iter_info["pool_advanced"] = pool_advanced
+            if pool_advanced:
+                pool_log = get_pool_log_since(pool_server.bare_path, last_seen_sha)
+                logger.info(
+                    "Pool advanced %s..%s — skipping hacker.",
+                    last_seen_sha[:8], current_pool_sha[:8],
+                )
+                # Pool situation changed; the reused hack may no longer apply.
+                reuse_hack = None
+            # Acknowledge what we've seen at iter start; prevents re-skipping hacker
+            # next iter if the fixer didn't push further advances. Fixer's own pushes
+            # are picked up by the post-validation refresh below.
+            last_seen_sha = current_pool_sha
+            write_last_seen_sha(config.task_output_dir, last_seen_sha)
+
+        if pool_advanced:
+            hack_summary = "(no new hack this iteration — the shared pool has advanced; see POOL_ADVANCED section)"
+            hack_reward = 0.0
+            iter_info["outcome_pre_fixer"] = "pool_sync"
+        elif reuse_hack is not None:
             hack_summary, hack_reward = reuse_hack
             reuse_hack = None
             logger.info("Reusing previous hack (reward=%.2f) — fixer failed, nothing changed.", hack_reward)
@@ -275,7 +329,7 @@ async def harden_task(config: HardenConfig) -> dict:
                         hack_reward, config.hack_threshold)
             hack_summary = extract_hack_summary(hacker_trial)
 
-        iter_info["hack_reward"] = hack_reward
+        iter_info["hack_reward"] = hack_reward if not pool_advanced else None
         original_instruction = (original_dir / "instruction.md").read_text()
 
         fixer_instruction = build_fixer_instruction(
@@ -284,11 +338,17 @@ async def harden_task(config: HardenConfig) -> dict:
             has_previous_solver=previous_solver_trial is not None,
             oracle=config.oracle,
             legitimate_marker=config.legitimate_marker,
+            pool_enabled=pooled,
+            pool_log=pool_log if pool_advanced else None,
+            last_seen_sha=last_seen_sha,
+            task_id=config.task_id,
+            iteration=iteration,
         )
         fixer_parent = create_working_copy(hardened_task_dir, output / "fixer_task")
         replace_instruction(fixer_parent, config.task_id, fixer_instruction)
         prepare_fixer_environment(
-            fixer_parent, config.task_id, previous_fixer_trial, previous_solver_trial
+            fixer_parent, config.task_id, previous_fixer_trial, previous_solver_trial,
+            pool_upstream_url=pool_server.upstream_url if pooled else None,
         )
 
         # Fixer always modifies the Dockerfile → force_build with harden image.
@@ -389,6 +449,10 @@ async def harden_task(config: HardenConfig) -> dict:
                         previous_fixer_trial = None
                         previous_solver_trial = None
                         legitimate_streak = 0
+                        if pooled:
+                            last_seen_sha = get_pool_head(pool_server.bare_path)
+                            write_last_seen_sha(config.task_output_dir, last_seen_sha)
+                            iter_info["pool_sha_end"] = last_seen_sha
                 else:
                     logger.warning("Fix broke solver (reward=%.2f < %.2f). Reverting.",
                                    solver_reward, config.solver_threshold)
