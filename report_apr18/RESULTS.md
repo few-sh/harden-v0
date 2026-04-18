@@ -140,6 +140,14 @@ Blue = cumulative pool commits (left axis). Orange = cumulative terminal tasks (
 
 The pool-commit curve is steepest in the first ~4h when many tasks hit the bootstrap attack surface simultaneously; it's leveling as defenses become more thorough. The terminal-task curve is bimodal: OOMs cluster early (fast precheck fails), max_iters cluster later (slow 10-round hardening burn).
 
+### Hacker & fixer durations over time
+
+![Rolling-average hacker and fixer durations](role_durations.png)
+
+Rolling average (15-call window) of per-call duration, with raw durations as faint scatter. Red = hacker, blue = fixer. Hacker avg ≈ 6.6 min/call (181 calls); fixer avg ≈ 4.4 min/call (277 calls).
+
+Fixer is called roughly 1.5× more often than hacker because pool-sync iterations skip the hacker but still run the fixer. Both series trend slightly downward over time — partly because later iterations benefit from prompt-cache warmth, partly because the pool accumulates reusable patches the fixer can `cp` rather than re-author. No dramatic inflection, which is what you want: the system hasn't hit a pathological slowdown pattern.
+
 ---
 
 ## Attack classes observed (inferred from commit messages)
