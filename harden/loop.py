@@ -226,7 +226,10 @@ async def harden_task(
     if pooled:
         last_seen_sha = read_last_seen_sha(config.task_output_dir)
         if last_seen_sha is None:
-            last_seen_sha = get_pool_head(pool_server.bare_path)
+            # New task: init to the pool's root commit so iter 0 sees ALL prior
+            # defenses as "advance" and starts by catching up rather than
+            # attacking an already-hardened pool.
+            last_seen_sha = pool_server.bootstrap_sha
             write_last_seen_sha(config.task_output_dir, last_seen_sha)
         logger.info("Pooled mode: last_seen pool SHA = %s", last_seen_sha[:8])
 
@@ -375,13 +378,29 @@ async def harden_task(
                 oracle=config.oracle, legitimate_marker=config.legitimate_marker,
             )
             if fix_result == "no_changes":
-                logger.warning("Fixer did not commit any changes")
-                previous_failure = (
-                    "Fixer did not commit any changes. You MUST commit: "
-                    "cd /logs/artifacts && git add -A && git commit -m 'fix'"
-                )
-                legitimate_streak = 0
-                iter_info["outcome"] = "no_changes"
+                if pool_advanced:
+                    logger.info(
+                        "Fixer made no local changes (pool-sync iteration acknowledged)."
+                    )
+                    iter_info["outcome"] = "pool_sync_noop"
+                    # Valid outcome: fixer inspected the pool advance and decided
+                    # nothing needed porting. Don't treat as failure; don't
+                    # re-attack next iter.
+                    reuse_hack = None
+                    previous_failure = None
+                    previous_fixer_trial = None
+                    previous_solver_trial = None
+                    legitimate_streak = 0
+                    result["iterations"].append(iter_info)
+                    continue
+                else:
+                    logger.warning("Fixer did not commit any changes")
+                    previous_failure = (
+                        "Fixer did not commit any changes. You MUST commit: "
+                        "cd /logs/artifacts && git add -A && git commit -m 'fix'"
+                    )
+                    legitimate_streak = 0
+                    iter_info["outcome"] = "no_changes"
             elif fix_result == "legitimate":
                 legitimate_streak += 1
                 logger.info("Fixer marked hack as legitimate (%d/%d).",
@@ -449,10 +468,6 @@ async def harden_task(
                         previous_fixer_trial = None
                         previous_solver_trial = None
                         legitimate_streak = 0
-                        if pooled:
-                            last_seen_sha = get_pool_head(pool_server.bare_path)
-                            write_last_seen_sha(config.task_output_dir, last_seen_sha)
-                            iter_info["pool_sha_end"] = last_seen_sha
                 else:
                     logger.warning("Fix broke solver (reward=%.2f < %.2f). Reverting.",
                                    solver_reward, config.solver_threshold)

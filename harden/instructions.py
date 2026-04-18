@@ -306,8 +306,7 @@ Keep the first line short; long rationale goes in the body.
 
 **When to push to the pool vs. keep local in `/logs/artifacts/`:**
 - **Push to pool** if the fix addresses a *general* attack class (e.g., stack-frame
-  inspection, timing monkeypatching, reward.json hijack, `os._exit` bypass). Other
-  tasks benefit immediately.
+  inspection, timing monkeypatching). Other tasks benefit immediately.
 - **Keep local** only for fixes that depend on task-specific details (e.g., exact
   tensor shapes, task-specific reference file contents).
 - When in doubt, push to pool. It is much better to share defenses than to let
@@ -325,8 +324,8 @@ POOL_ADVANCED_HINT_TEMPLATE = """
 
 ## Pool advanced since this task's last iteration
 
-No new hack was run this iteration — the shared pool has advanced from other
-tasks' work. Your last-seen pool commit was `{last_seen_short}`. New commits:
+No new hack was run this iteration — the shared pool has advanced since you last
+looked. Your last-seen pool commit was `{last_seen_short}`. New commits:
 
 ```
 {pool_log}
@@ -334,12 +333,20 @@ tasks' work. Your last-seen pool commit was `{last_seen_short}`. New commits:
 
 Inspect the full diff: `cd /pool && git diff {last_seen_short}..HEAD`.
 
-Decide how to react:
-- If the pool's new defenses already cover this task cleanly, port them into
-  `/logs/artifacts/tests/` and commit locally (no new pool commit needed).
-- If porting reveals a gap specific to this task, patch `/pool/` further and push.
-- If the pool commits don't apply here, still update the local task files to
-  stay roughly aligned (avoid drifting) and explain why in your local commit.
+Some of those commits may be yours (you pushed them in a prior iteration) and
+some may be from other tasks. Decide how to react:
+
+- **Do nothing.** If the pool advance doesn't affect this task (e.g., the new
+  commits are your own, or are about unrelated files / attack classes), it is
+  completely fine to make zero changes this iteration. Don't fabricate work.
+- **Port into local.** If the pool's new defenses apply here cleanly, copy the
+  relevant files into `/logs/artifacts/tests/` and commit locally.
+  `cp /pool/tests/eval_kernel.py /logs/artifacts/tests/eval_kernel.py`
+  `cd /logs/artifacts && git add -A && git commit -m 'sync from pool'`
+- **Refine pool further.** If porting reveals a gap specific to this task, patch
+  `/pool/` further and push a new commit, then also port it locally.
+
+Doing nothing when nothing is needed is a valid and preferred outcome.
 """
 
 

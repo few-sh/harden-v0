@@ -73,6 +73,7 @@ class PoolServer:
         self.bootstrap_from = Path(bootstrap_from)
         self.port: int | None = None
         self._daemon: subprocess.Popen | None = None
+        self._bootstrap_sha: str | None = None
 
     @property
     def bare_path(self) -> Path:
@@ -87,8 +88,22 @@ class PoolServer:
 
     def start(self) -> None:
         self._bootstrap_bare_repo()
+        # Cache the root commit (the pool's oldest ancestor) — used as the
+        # "never seen" sentinel for new tasks so they catch up instead of
+        # attacking a pre-hardened pool on iter 0.
+        root = _run(
+            ["git", "--git-dir", str(self.bare_path), "rev-list", "--max-parents=0", "HEAD"],
+        ).stdout.strip().splitlines()
+        if root:
+            self._bootstrap_sha = root[0]
         self.port = _pick_port(self.requested_port)
         self._launch_daemon()
+
+    @property
+    def bootstrap_sha(self) -> str:
+        if self._bootstrap_sha is None:
+            raise RuntimeError("PoolServer.start() must be called first")
+        return self._bootstrap_sha
 
     def stop(self) -> None:
         if self._daemon is None:
