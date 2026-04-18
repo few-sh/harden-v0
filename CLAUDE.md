@@ -8,6 +8,8 @@ agents (Terminus-2 via Harbor) play adversarial roles:
 3. **Solver / Oracle** — pre-check and post-fix validation (validates task is solvable & fix doesn't break it).
 4. **Targeted replay** (optional, `--replay-enabled`) — after solver accepts the fix, re-runs a constrained hacker on the patched task with the prior exploit as a replay target. If it re-lands, the fix is rejected.
 
+**Pooled / jumper mode** (optional, `--pool-enabled`): tasks share a defense repo served by a host-side `git daemon`. Fixers clone the pool, pull latest, commit, and push; other tasks consume those pushes on their next iteration via a "skip-hacker" path that lets the fixer integrate pool changes instead of attacking.
+
 ## Two modes (selected by `oracle: bool`)
 
 Both modes run the same loop; only the pre-check/validation step differs.
@@ -49,6 +51,7 @@ harden-unified/
     instructions.py   # build_hacker_instruction + build_targeted_replay_instruction + FIXER templates + SOLVER_HINT
     workspace.py      # working copies, artifact extraction, prepare_*_environment
     batch.py          # harden_batch (async with semaphore + stagger)
+    pool.py           # PoolServer (jumper mode): bare repo + git daemon + host-side helpers
     trajectory.py     # ATIF trajectory → summary
   harden.py           # Convenience entry point
   monitor.py          # Live batch progress monitor
@@ -80,6 +83,12 @@ python -m harden --oracle --task-id matmul \
 # Batch
 python -m harden --task-ids task1,task2,task3 --max-concurrent 4
 python -m harden --all --resume
+
+# Pooled (jumper) batch — tasks share a defense repo
+python -m harden --oracle --all --hacker-privileged \
+  --pool-enabled --pool-bootstrap-dir <path-to-hardened-task> \
+  --hack-threshold 10 --solver-threshold 0.5 \
+  --max-concurrent 7
 ```
 
 ## Key knobs (see `harden --help` for full list)
@@ -93,6 +102,18 @@ python -m harden --all --resume
 - `--hacker-privileged` — mount the evaluation environment (tests/, environment/) read-only at `/eval_env/` so the hacker can whitebox-inspect the verifier.
 - `--hacker-feedback` — give hacker read-only access to previous failed attempts.
 - `--replay-enabled`, `--replay-retries` — enable targeted-replay post-solver gate; a constrained hacker re-attempts the prior exploit on the patched task, and the fix is rejected if it re-lands. Reuses hacker model/turns/timeout knobs, and inherits `--hacker-privileged` (if the hacker had `/eval_env/` access, replay does too — the exploit may reference it).
+- `--pool-enabled`, `--pool-bootstrap-dir <hardened_task_dir>`, `--pool-port <N>` — enable jumper / pooled mode. Opt-in; default off. Host-side `git daemon` serves a bare pool repo at `<output_dir>/pool.git`; fixer containers clone/push to `git://host.docker.internal:<port>/pool.git`. Port auto-bumps on conflict.
+
+### Pooled (jumper) mode
+
+When `--pool-enabled`:
+- Bootstrap: a fresh bare repo is initialized from `--pool-bootstrap-dir`'s `tests/`; commit message `[bootstrap] from <path>`. If `<output_dir>/pool.git/` already exists, it's reused (so you can pre-populate the pool with any history).
+- Per-task last-seen SHA at `<task_output_dir>/pool_sha.txt`. Initialized to the pool's root (bootstrap) commit for a fresh task so iter 0 catches up to existing defenses via skip-hacker.
+- Iteration branches:
+  - If pool HEAD advanced beyond last-seen → **skip hacker**, show fixer a git log of new commits. Valid fixer outcomes: port into local, refine pool, or no-op (`outcome: pool_sync_noop`).
+  - Else → normal hacker → fixer flow; fixer may additionally push to the pool.
+- Last-seen advance rule: at iter end on fix_applied, `last_seen` is refreshed to our own most recent pool commit (matched by `author=harden-fixer-<task_id>`), NOT current HEAD — this avoids burning the next iter on self-acknowledging our own push, while still triggering skip-hacker if a concurrent task's commit is ahead of ours.
+- Concurrency: git's push semantics handle it (non-fast-forward rejection → agent does `git pull --rebase` and retries). No host-side lock.
 
 ## Outputs
 
@@ -117,11 +138,15 @@ Each task produces:
       "iteration": 0,
       "hack_reward": 1.23,
       "fix_applied": false,
-      "outcome": "fixed" | "fix_failed" | "no_changes" | "legitimate" | "hacker_failed" | "replay_broke_fix",
+      "outcome": "fixed" | "fix_failed" | "no_changes" | "legitimate" | "hacker_failed" | "replay_broke_fix" | "pool_sync_noop",
       "replay_attempted": false,
-      "replay_reward": null
+      "replay_reward": null,
+      "pool_advanced": false,         // pooled mode only
+      "pool_sha_start": "<sha>",      // pooled mode only
+      "pool_own_commit": "<sha>"      // pooled mode only; set when fixer pushed this iter
     }
-  ]
+  ],
+  "pool_enabled": true                  // pooled mode only
 }
 ```
 
