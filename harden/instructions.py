@@ -314,10 +314,10 @@ Keep the first line short; long rationale goes in the body.
 
 **When to push to the pool vs. keep local in `/logs/artifacts/`:**
 - **Always update your local `/logs/artifacts/tests/` files with your changes first.**
+- **Do not only push to the pool**: the pool is the canonical repo for shared, task-agnostic defenses,
+  but every fix must also update the local state for this task.
 - **Push to pool as well** if the fix addresses a *general* attack class (e.g., stack-frame
   inspection, timing monkeypatching) — other tasks benefit immediately.
-- **Do not only push to the pool**: the pool is the canonical repo for shared, task-agnostic defenses,
-  but updating
 - When in doubt, push the improvement to the pool too. It's much better to share defenses than to let
   each task redo the same work.
 

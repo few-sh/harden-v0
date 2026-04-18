@@ -224,7 +224,10 @@ async def harden_task(
     pool_cursor: PoolCursor | None = None
     if pooled:
         pool_cursor = PoolCursor(pool_server, config.task_output_dir, config.task_id)
-        logger.info("Pooled mode: last_seen pool SHA = %s", pool_cursor.sha[:8])
+        logger.info(
+            "Pooled mode: last_seen pool SHA = %s",
+            (pool_cursor.sha or "(fresh)")[:8],
+        )
 
     for iteration in range(config.max_iterations):
         iter_info: dict = {

@@ -258,12 +258,18 @@ def get_pool_head(bare_path: Path) -> str:
     return proc.stdout.strip()
 
 
-def get_pool_log_since(bare_path: Path, since_sha: str, limit: int = 50) -> str:
-    """`git log since..HEAD` in a compact-ish, prompt-ready format."""
+def get_pool_log_since(bare_path: Path, since_sha: str | None, limit: int = 50) -> str:
+    """`git log since..HEAD` in a compact-ish, prompt-ready format.
+
+    When `since_sha` is None/empty, returns the whole history up to HEAD —
+    used for fresh tasks that should catch up to the bootstrap defense
+    before attacking.
+    """
+    rev_range = f"{since_sha}..HEAD" if since_sha else "HEAD"
     proc = _run(
         [
             "git", "--git-dir", str(bare_path),
-            "log", f"{since_sha}..HEAD",
+            "log", rev_range,
             "--reverse",
             f"--max-count={limit}",
             "--pretty=format:* %h %s%n%w(0,4,4)%b",
@@ -375,17 +381,14 @@ class PoolCursor:
         self._pool_server = pool_server
         self._task_output_dir = task_output_dir
         self._task_id = task_id
-        seen = read_last_seen_sha(task_output_dir)
-        if seen is None:
-            # Fresh task: start at the pool's root so iter 0 sees ALL prior
-            # defenses as "advance" and catches up rather than attacking a
-            # pre-hardened pool from scratch.
-            seen = pool_server.bootstrap_sha
-            write_last_seen_sha(task_output_dir, seen)
-        self._sha: str = seen
+        # Fresh tasks start with `None` (not the bootstrap SHA): iter 0 will
+        # then always report an advance and the fixer catches up to the
+        # seeded defense before the task attacks. On disk this is persisted
+        # as an empty file once the task has acknowledged its first iter.
+        self._sha: str | None = read_last_seen_sha(task_output_dir)
 
     @property
-    def sha(self) -> str:
+    def sha(self) -> str | None:
         return self._sha
 
     def iter_start(self) -> tuple[bool, str, str, str]:
@@ -393,16 +396,18 @@ class PoolCursor:
 
         Returns (pool_advanced, pool_log, previous_sha, current_sha).
         Does NOT persist — caller invokes `persist()` at commit points.
+        A fresh task (previous is None) always reports an advance so iter 0
+        catches up to the seeded defense.
         """
         current = get_pool_head(self._pool_server.bare_path)
         previous = self._sha
-        advanced = current != previous
+        advanced = (previous is None) or (current != previous)
         log = (
             get_pool_log_since(self._pool_server.bare_path, previous)
             if advanced else ""
         )
         self._sha = current
-        return advanced, log, previous, current
+        return advanced, log, previous or "", current
 
     def advance_to_own_commit_if_newer(self) -> str | None:
         """If our most-recent pool commit is strictly newer than the in-memory
@@ -412,7 +417,10 @@ class PoolCursor:
         still triggering skip-hacker when a concurrent task's commit is ahead.
         """
         own = get_latest_own_commit(self._pool_server.bare_path, self._task_id)
-        if own and own != self._sha and is_ancestor(
+        if not own or own == self._sha:
+            return None
+        # On a fresh cursor (sha is None), any own commit is strictly newer.
+        if self._sha is None or is_ancestor(
             self._pool_server.bare_path, self._sha, own,
         ):
             self._sha = own
@@ -421,4 +429,4 @@ class PoolCursor:
 
     def persist(self) -> None:
         """Flush the in-memory cursor to pool_sha.txt."""
-        write_last_seen_sha(self._task_output_dir, self._sha)
+        write_last_seen_sha(self._task_output_dir, self._sha or "")
