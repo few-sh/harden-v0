@@ -148,6 +148,18 @@ Rolling average (15-call window) of per-call duration, with raw durations as fai
 
 Fixer is called roughly 1.5× more often than hacker because pool-sync iterations skip the hacker but still run the fixer. Both series trend slightly downward over time — partly because later iterations benefit from prompt-cache warmth, partly because the pool accumulates reusable patches the fixer can `cp` rather than re-author. No dramatic inflection, which is what you want: the system hasn't hit a pathological slowdown pattern.
 
+### Hacker reward (speedup) distribution over time
+
+![Hacker reward over time](hacker_reward.png)
+
+Gray scatter = raw per-attempt hacker speedups. Red line = rolling median (15-call window). Red band = rolling 10th–90th percentile. Log-scale y-axis. Dashed line at `hack_threshold = 10`.
+
+This is the key defense-efficacy signal. A healthy pool should push the distribution *downward* over time — smaller speedups mean more tightly-patched evals. In practice:
+
+- The **band is huge** — the 10th–90th percentile spans ~10 orders of magnitude, reflecting that any successful exploit tends to max out the speedup (10K–10B typical, occasional overflow to 10^99) while failed attempts score 0–1×.
+- **Median near `hack_threshold = 10`** (1–1000×) means roughly half of attempts land exploits, half fail — consistent with hackers finding something each iter but fixers patching most.
+- **No clean monotone decrease**: the pool accumulates defenses but privileged hackers keep finding new attack surfaces. Consistent with the "0 additional robust after task 074" observation; the system is in a stable stalemate rather than collapsing into task-level robustness.
+
 ---
 
 ## Attack classes observed (inferred from commit messages)
