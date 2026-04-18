@@ -79,7 +79,7 @@ python -m harden --oracle --task-id matmul \
 
 # Batch
 python -m harden --task-ids task1,task2,task3 --max-concurrent 4
-python -m harden --all --resume
+python -m harden --all
 ```
 
 ## Key knobs (see `harden --help` for full list)
@@ -125,13 +125,13 @@ Each task produces:
 }
 ```
 
-### Terminal statuses (used by `--resume`)
+### Terminal statuses (resume is automatic when `--output-dir` already exists)
 
 - `robust` — hacker failed all retries, OR legitimate marker hit threshold.
 - `max_iterations` — loop exhausted `--max-iterations` without converging.
 - `solver_failed_precheck` — pre-check could not pass the task (may be broken/unsolvable).
 
-Non-terminal (re-run on `--resume`): `error`, `unknown`, missing `result.json`.
+Non-terminal (re-run on resume): `error`, `unknown`, missing `result.json`.
 
 ## Things easy to get wrong
 

@@ -107,9 +107,6 @@ def _build_parser() -> argparse.ArgumentParser:
     # Batch-only
     parser.add_argument("--max-concurrent", type=int, default=4,
                         help="Max concurrent Docker containers (batch mode)")
-    parser.add_argument("--resume", action="store_true",
-                        help="Preserve existing output/hardened/<task>/ from a prior run; "
-                             "in batch mode also skip tasks whose result.json is terminal.")
 
     parser.add_argument("--log-level", default="INFO",
                         choices=["DEBUG", "INFO", "WARNING", "ERROR"],
@@ -170,6 +167,7 @@ def main(argv: list[str] | None = None) -> None:
     if args.harbor_config is not None and not args.harbor_config.is_file():
         parser.error(f"Harbor config file not found: {args.harbor_config}")
 
+    args.resume = args.output_dir.exists()
     args.output_dir.mkdir(parents=True, exist_ok=True)
     logging.info("Output directory: %s", args.output_dir.resolve())
 
