@@ -44,8 +44,8 @@ def _save_batch_config(config: BatchHardenConfig) -> None:
     logger.info("Saved batch configuration to %s", config_path)
 
 
-def _is_completed(output_dir: Path, task_id: str, oracle: bool) -> bool:
-    """A task is complete only if its result is terminal AND its mode matches."""
+def _is_completed(output_dir: Path, task_id: str, oracle: bool, kernelbench_mode: bool) -> bool:
+    """A task is complete only if its result is terminal AND both mode flags match."""
     result_path = output_dir / task_id / "result.json"
     if not result_path.exists():
         return False
@@ -55,10 +55,13 @@ def _is_completed(output_dir: Path, task_id: str, oracle: bool) -> bool:
         return False
     if result.get("status") not in _TERMINAL_STATUSES:
         return False
-    if result.get("oracle") != oracle:
+    prev_oracle = result.get("oracle")
+    prev_kb = result.get("kernelbench_mode", prev_oracle)  # back-compat: old results set only `oracle`
+    if prev_oracle != oracle or prev_kb != kernelbench_mode:
         logger.warning(
-            "[%s] Previous result has oracle=%s but current config has oracle=%s — re-running.",
-            task_id, result.get("oracle"), oracle,
+            "[%s] Prior result mode mismatch "
+            "(oracle %s→%s, kernelbench_mode %s→%s) — re-running.",
+            task_id, prev_oracle, oracle, prev_kb, kernelbench_mode,
         )
         return False
     return True
@@ -71,7 +74,7 @@ async def harden_batch(config: BatchHardenConfig) -> list[dict]:
 
     if config.resume:
         skipped = [t for t in config.task_ids
-                   if _is_completed(config.output_dir, t, config.oracle)]
+                   if _is_completed(config.output_dir, t, config.oracle, config.kernelbench_mode)]
         tasks_to_run = [t for t in config.task_ids if t not in set(skipped)]
         if skipped:
             logger.info("Resuming: skipping %d completed tasks", len(skipped))
@@ -82,8 +85,8 @@ async def harden_batch(config: BatchHardenConfig) -> list[dict]:
     total = len(config.task_ids)
     n_to_run = len(tasks_to_run)
     logger.info(
-        "Batch hardening: %d tasks (%d to run), max %d concurrent containers, oracle=%s",
-        total, n_to_run, config.max_concurrent_containers, config.oracle,
+        "Batch hardening: %d tasks (%d to run), max %d concurrent containers, oracle=%s kernelbench_mode=%s",
+        total, n_to_run, config.max_concurrent_containers, config.oracle, config.kernelbench_mode,
     )
 
     progress = {"done": 0, "total": n_to_run}

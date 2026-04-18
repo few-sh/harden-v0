@@ -13,7 +13,9 @@ from .loop import harden_task
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Adversarial hardening loop — oracle mode (KernelBench) or solver mode (generic).",
+        description="Adversarial hardening loop. Two orthogonal mode flags: "
+                    "--oracle (deterministic pre-check) and --kernelbench-mode "
+                    "(KB-specific prompts/templates). KernelBench runs pass both.",
     )
 
     # Task selection — mutually exclusive
@@ -34,18 +36,24 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--output-dir", type=Path, default=None)
 
-    # Mode
+    # Mode (two orthogonal flags)
     parser.add_argument(
         "--oracle", dest="oracle", action="store_true", default=False,
-        help="Use deterministic oracle pre-check (KernelBench style: reference.py → solution.py). "
-             "Default is solver-agent mode.",
+        help="Use deterministic pre-check (copies reference.py → solution.py via solve.sh). "
+             "Default is agent-solver pre-check.",
+    )
+    parser.add_argument(
+        "--kernelbench-mode", dest="kernelbench_mode", action="store_true", default=False,
+        help="Use KernelBench-specific prompts, templates, and eval-file check "
+             "(speedup metric, eval_kernel.py). Default is generic task-verifier framing "
+             "(pass/fail reward, test_outputs.py). KernelBench runs need both --oracle and this.",
     )
 
     # Models
     parser.add_argument("--hacker-model", default="gemini/gemini-3.1-pro-preview")
     parser.add_argument("--fixer-model", default="gemini/gemini-3.1-pro-preview")
     parser.add_argument("--solver-model", default="gemini/gemini-3.1-pro-preview",
-                        help="Solver model (solver mode only; ignored when oracle is on)")
+                        help="Agent-solver model (used when --oracle is off; ignored when on)")
 
     # Thresholds (defaults suit reward-based tasks; KB overrides to 10 / 0.5)
     parser.add_argument("--hack-threshold", type=float, default=1.0,
@@ -56,7 +64,8 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-iterations", type=int, default=10)
     parser.add_argument("--hacker-retries", type=int, default=3)
     parser.add_argument("--solver-precheck-retries", type=int, default=1,
-                        help="Pre-check retries (solver mode only; oracle is deterministic)")
+                        help="Pre-check retries (only meaningful when --oracle is off; "
+                             "the deterministic oracle doesn't need retries)")
     parser.add_argument("--legitimate-threshold", type=int, default=3)
     parser.add_argument("--no-legitimate-marker", dest="legitimate_marker",
                         action="store_false", default=True,
@@ -120,6 +129,7 @@ def _config_kwargs(args: argparse.Namespace) -> dict:
         tasks_dir=args.tasks_dir,
         output_dir=args.output_dir,
         oracle=args.oracle,
+        kernelbench_mode=args.kernelbench_mode,
         hacker_model=args.hacker_model,
         fixer_model=args.fixer_model,
         solver_model=args.solver_model,
@@ -183,11 +193,15 @@ def _run_single(args: argparse.Namespace) -> None:
 
     status = result.get("status", "unknown")
     iterations = result.get("iterations", [])
-    metric = "speedup" if config.oracle else "reward"
+    # Metric label follows kernelbench_mode (what the verifier actually scores),
+    # not oracle (which only controls the pre-check dispatch).
+    metric = "speedup" if config.kernelbench_mode else "reward"
+    precheck = "oracle" if config.oracle else "solver-agent"
+    framing = "kernelbench" if config.kernelbench_mode else "generic"
 
     print(f"\n{'='*60}")
     print(f"Task:       {config.task_id}")
-    print(f"Mode:       {'oracle' if config.oracle else 'solver'}")
+    print(f"Mode:       pre-check={precheck}, framing={framing}")
     print(f"Status:     {status}")
     print(f"Iterations: {len(iterations)}")
     for it in iterations:

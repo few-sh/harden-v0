@@ -112,7 +112,7 @@ async def run_solver_agent(
     force_build: bool = False,
     image_name: str | None = None,
 ) -> tuple[float, Path]:
-    """Run a Terminus-2 solver agent (used as pre-check in solver mode, oracle=False).
+    """Run a Terminus-2 solver agent (used as pre-check when cfg.oracle=False).
 
     Verifier enabled — we need the reward signal. Solver may be privileged via
     the workspace layer (prepare_solver_environment injects /solution/ into the image).

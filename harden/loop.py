@@ -1,10 +1,18 @@
 """Main hardening loop orchestration.
 
-Dispatches pre-check and post-fixer validation through `_run_solver`:
-  * oracle=True  — `run_oracle_solver` (deterministic, speedup >= solver_threshold)
-  * oracle=False — `run_solver_agent` (terminus-2, reward >= solver_threshold)
+Two orthogonal mode flags:
+  * `cfg.oracle`           — pre-check dispatch (deterministic vs agent solver)
+  * `cfg.kernelbench_mode` — prompt/template bundle + metric semantics
+                             (KB: speedup / `eval_kernel.py`; generic: reward /
+                             `test_outputs.py`)
 
-Hack success is gated on `cfg.hack_threshold` (reward/speedup depending on mode).
+`_run_solver` routes on `cfg.oracle`:
+  * True  — `run_oracle_solver` (deterministic reference copy)
+  * False — `run_solver_agent` (Terminus-2 agent solver)
+
+The threshold values (`cfg.hack_threshold`, `cfg.solver_threshold`) are
+compared against whatever the verifier returns; the *name* of that metric
+(speedup vs reward) follows `cfg.kernelbench_mode`, not `cfg.oracle`.
 """
 
 import json
@@ -63,7 +71,7 @@ async def _run_targeted_replay(
         replace_instruction(
             replay_parent, cfg.task_id,
             build_targeted_replay_instruction(
-                original_instruction, hack_summary, oracle=cfg.oracle
+                original_instruction, hack_summary, kernelbench_mode=cfg.kernelbench_mode
             ),
         )
         if cfg.hacker_privileged and prepare_privileged_hacker_environment(
@@ -151,6 +159,7 @@ async def harden_task(config: HardenConfig) -> dict:
         "status": "unknown",
         "iterations": [],
         "oracle": config.oracle,
+        "kernelbench_mode": config.kernelbench_mode,
     }
 
     hardened_parent = create_hardened_copy(original_dir, output, resume=config.resume)
@@ -224,7 +233,9 @@ async def harden_task(config: HardenConfig) -> dict:
             for attempt in range(config.hacker_retries):
                 hacker_parent = create_working_copy(hardened_task_dir, output / "hacker_task")
                 original_instruction = (original_dir / "instruction.md").read_text()
-                hacker_instruction = build_hacker_instruction(original_instruction, oracle=config.oracle)
+                hacker_instruction = build_hacker_instruction(
+                    original_instruction, kernelbench_mode=config.kernelbench_mode
+                )
                 replace_instruction(hacker_parent, config.task_id, hacker_instruction)
 
                 hacker_privileged_modified = False
@@ -283,6 +294,7 @@ async def harden_task(config: HardenConfig) -> dict:
             has_previous_attempt=previous_fixer_trial is not None,
             has_previous_solver=previous_solver_trial is not None,
             oracle=config.oracle,
+            kernelbench_mode=config.kernelbench_mode,
             legitimate_marker=config.legitimate_marker,
         )
         fixer_parent = create_working_copy(hardened_task_dir, output / "fixer_task")
@@ -312,7 +324,8 @@ async def harden_task(config: HardenConfig) -> dict:
             solver_parent = create_working_copy(hardened_task_dir, output / "solver_validate")
             fix_result = extract_fixer_artifacts(
                 fixer_trial, solver_parent, config.task_id,
-                oracle=config.oracle, legitimate_marker=config.legitimate_marker,
+                kernelbench_mode=config.kernelbench_mode,
+                legitimate_marker=config.legitimate_marker,
             )
             if fix_result == "no_changes":
                 logger.warning("Fixer did not commit any changes")

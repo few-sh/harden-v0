@@ -112,7 +112,10 @@ async def run_trial(
         if condition == "solver":
             instruction = original_inst
         else:
-            instruction = build_hinted_hacker_instruction(original_inst, trial["hint_text"])
+            # probe_hints targets KernelBench — use the KB framing.
+            instruction = build_hinted_hacker_instruction(
+                original_inst, trial["hint_text"], kernelbench_mode=True
+            )
 
         replace_instruction(work_parent, task_id, instruction)
 
