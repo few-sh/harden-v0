@@ -182,11 +182,17 @@ Drivers: `scripts/prepare_intermediates.py` stages each commit's `tests/` onto a
 |---|---:|---:|---|
 | pristine (unhardened) | 81 | 60.9% | 15/15 hint classes leak, rewards up to 10¹⁸× |
 | merged (415-line seed) | 18 | 13.5% | 8/15 classes still leak, rewards 300–2700× |
+| merged_privileged (LLM-compounded) | 9 | 6.7% | see below |
 | pool @ commit 001 (= merged) | 18 | 13.5% | bootstrap commit of the pool repo |
+| pool @ commit 010 | 1 | 0.7% | |
 | pool @ commit 020 | **0** | **0%** | full closure (commit `bba3b5e`, globals_patching) |
 | pool @ commit 050 | 14 | 10.5% | **regression** |
 | pool @ commit 060 – 180 | 1 | 0.7% | persistent hint-07 (input-shape swap, `N=2`) |
 | pool @ commit 185 (HEAD) | **0** | **0%** | `force reference get_inputs` closes last leak |
+
+**merged_privileged** is `scripts/extract_hack_summaries.py` + `merge_defenses.py` run over the privileged_hacker_batch (27 tasks, no shared pool) starting from task-001's hardened state. 52 LLM passes (2 passes × 26 donor tasks, gemini-3.1-pro-preview) produced 13 accepted updates. Resulting `eval_kernel.py` = 707 LOC vs 457 LOC seed. Driver scripts and full output at `scripts/{extract_hack_summaries,merge_defenses}.py` and `tmp/merged_privileged/`.
+
+Compared to the pool, post-hoc LLM compounding over 26 donor tasks (13 accepted commits) lands at 9/134 hacks (6.7%), while the pool reaches 1/134 at just commit 10 and 0/134 at commit 20.
 
 **Commit-050 regression — root cause.** Commit `ccfc52b` (#49) rewrote the post-timing correctness check to read `sys._timing_sample`, but the companion edit in the timing loop only stored a local `_saved_args_for_check = [...]` — nothing ever assigned to `sys._timing_sample`. `hasattr(sys, '_timing_sample')` therefore evaluated False, silently disabling the entire post-timing check for 4 commits (#49 → #52). The defense that catches *phase-switching* exploits — kernels that compute correctly during the 5-trial correctness phase and switch to fast/wrong paths during the 100-trial timing phase — became a no-op, and hints 01, 02, 04, 12, 14 immediately reopened. Commit `38ca510` (#53) restored the working `new_mod(*inputs)` re-run inside thread isolation, closing the regression.
 

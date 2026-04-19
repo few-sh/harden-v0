@@ -1,6 +1,7 @@
 snapshot,commit_index,sha,hint_hacks,hint_total,hint_rate,solver_hacks,solver_total
 pristine,,,81,133,0.6090225563909775,0,3
 merged,,,18,133,0.13533834586466165,0,3
+merged_privileged,,,9,133,0.06766917293233082,0,3
 pool_commit_001,1,a2e9830,18,133,0.13533834586466165,0,3
 pool_commit_010,10,66f5e9f,1,133,0.007518796992481203,0,3
 pool_commit_020,20,bba3b5e,0,133,0.0,0,3
