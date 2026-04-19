@@ -1,6 +1,6 @@
 # Jumper: Pooled Adversarial Verifier Hardening
 
-**Status:** in-progress run, snapshot at 2026-04-18 ~16:50 UTC (~12h elapsed).
+**Status:** batch complete, 2026-04-18 05:00 → 2026-04-18 23:50 UTC (~18h 50min wall clock).
 **Branch:** `jumper` on `/lambda/nfs/reward-hacking/harden-unified-jumper/`.
 
 ---
@@ -99,34 +99,34 @@ python -m harden --oracle --all \
 
 ---
 
-## Results snapshot (~12h in, 80/100 terminal)
+## Results (100/100 terminal)
 
 ### Terminal outcomes
 
 | Outcome | Count | Notes |
 |---|---|---|
-| **Robust** | 1 | Task 074 (conv-transposed-1d-dilated), 8 iterations, 197 min. Hacker failed all 3 retries. |
-| **Max iterations** | 33 | Hit 10 fixer iterations without reaching robust. The common case. |
-| **Solver failed precheck** | 46 | OOM on 16GB MIG slices (reductions / norms / pooling / loss ops). |
-| **Still running** | ~20 | Tail tasks, mostly matmul/conv-transposed-3d at iter 7-10. |
+| **Robust** | 5 | Tasks 074, 069, 082, 040, 065. All hit "hacker failed all 3 retries" after 6–10 iterations. |
+| **Max iterations** | 39 | Hit 10 fixer iterations without reaching robust — the common case for tasks that ran through. |
+| **Solver failed precheck** | 56 | OOM on 16GB MIG slices (reductions / norms / pooling / loss ops). |
 
-No tasks errored. No fix broke solver beyond recoverable (13 broken fixes reverted mid-run, fixer retried).
+Of the 44 tasks that actually hardened (excluding OOMs), 5/44 = **11% went robust** within 10 iterations. No tasks errored. 15 broken fixes were reverted mid-run; the fixer retried each on its next iteration.
 
 ### Pool statistics
 
-- **Pool commits:** **155** (including the initial `[bootstrap]` commit).
-- **Hack successes:** 136+ (fixer handled each via patch).
-- **Hack failures (robust path):** 1 so far (task 074).
-- **Fix validations:** 245+.
-- **Fix-broke-solver reversions:** 13.
-- **Pool advances (skip-hacker triggers):** 138+.
-- **pool_sync_noop** (fixer acknowledged pool without local change): 11+.
+- **Pool commits:** **185** (184 hardening + 1 `[bootstrap]`).
+- **Iteration outcomes** (across 428 iterations in per-task `result.json`):
+  - `fixed`: 385 — fixer patched a hack (or ported pool state) and solver validated.
+  - `pool_sync_noop`: 17 — fixer inspected pool advance and decided no local change needed.
+  - `no_changes`: 6 — fixer ran but left the task dir untouched.
+  - `fix_failed`: 15 — fix broke solver; reverted.
+  - `hacker_failed`: 5 — single-iter hacker failed all 3 retries (contributes to robust outcome when three in a row happen).
+- **Pool advances (skip-hacker triggers):** 200 log occurrences across all iters.
 
 ### Cost
 
-- **$283.08** across **569** LLM trials so far (fixer + hacker combined; oracle-solver is free).
-- Mostly dominated by fixer ($11-$15 per task × many iterations).
-- Projected full-batch cost: **~$330-370**. Compare to the partial privileged-hacker-batch: $148 for ~20 terminal tasks, which scales to ~$750+ for 80 tasks.
+- **$387.77** across **694** LLM trials (hacker + fixer; oracle-solver is deterministic and free).
+- ~$3.88 per task average; heaviest tasks hit $12–15.
+- For comparison: privileged-hacker-batch (non-pooled) ran $147.63 for ~32 terminal tasks. Naive scaling to 100 tasks = ~$460. So pooled mode is **~16% cheaper per task**, ignoring the robust-rate improvement (partial batch had ~13% robust rate, similar to this one).
 
 ### Pool commits and task progress over time
 
@@ -134,19 +134,19 @@ No tasks errored. No fix broke solver beyond recoverable (13 broken fixes revert
 
 Blue = cumulative pool commits (left axis). Orange = cumulative terminal tasks (right axis, 0–100 so also reads as % of batch). X markers along the progress curve show individual terminal events:
 
-- **green X** — `robust` (task 074 at t≈557 min: hacker failed all 3 retries).
-- **red X** — `max_iterations` (33: 10 iterations without robustness).
-- **gray X** — OOM precheck failure (46: 16GB MIG slice too small for the task).
+- **green X** — `robust` (5: tasks 074, 069, 082, 040, 065 at t ≈ 557, 766, 849, 876, 1010 min).
+- **red X** — `max_iterations` (39: 10 iterations without robustness).
+- **gray X** — OOM precheck failure (56: 16GB MIG slice too small for the task).
 
-The pool-commit curve is steepest in the first ~4h when many tasks hit the bootstrap attack surface simultaneously; it's leveling as defenses become more thorough. The terminal-task curve is bimodal: OOMs cluster early (fast precheck fails), max_iters cluster later (slow 10-round hardening burn).
+The pool-commit curve is steepest in the first ~4h when many tasks hit the bootstrap attack surface simultaneously and grow linearly through the main body of the batch. The tail flattens after minute ~800 when only 2 concurrency slots are still occupied. The terminal-task curve is front-loaded by OOMs (fast precheck fails cluster in the first 2h) then a steady drip of max_iter completions + a handful of robust outcomes toward the end.
 
 ### Hacker & fixer durations over time
 
 ![Rolling-average hacker and fixer durations](role_durations.png)
 
-Rolling average (15-call window) of per-call duration, with raw durations as faint scatter. Red = hacker, blue = fixer. Hacker avg ≈ 6.6 min/call (181 calls); fixer avg ≈ 4.4 min/call (277 calls).
+Rolling average (15-call window) of per-call duration, with raw durations as faint scatter. Red = hacker, blue = fixer. Hacker avg ≈ **8.5 min/call** (272 calls); fixer avg ≈ **6.6 min/call** (423 calls).
 
-Fixer is called roughly 1.5× more often than hacker because pool-sync iterations skip the hacker but still run the fixer. Series are roughly flat across the batch — no dramatic acceleration or slowdown pattern.
+Fixer is called roughly 1.55× more often than hacker because pool-sync iterations skip the hacker but still run the fixer. Both series drift upward over the first 10–12h (hacker 4→10 min, fixer 2→7 min) as the pool accumulates defenses and exploits require more probing. The upward drift in the tail (~minute 800+) partly reflects that only 2 tasks remain and they're the hardest ones (conv-transposed-2d, triplet-margin-loss) — selection bias rather than a systemic slowdown.
 
 ### Hacker reward (speedup) distribution over time
 
@@ -156,15 +156,16 @@ Gray scatter = raw per-attempt hacker speedups. Red line = rolling median (15-ca
 
 This is the key defense-efficacy signal. A healthy pool should push the distribution *downward* over time — smaller speedups mean more tightly-patched evals. In practice:
 
-- **Median ≈ 10⁵** (100,000×). Most hacker attempts land a full exploit; the defense isn't driving successful attempts to near-threshold values.
+- **Median ≈ 10⁵** (100,000×) across the whole run. Most hacker attempts land a full exploit; the defense isn't driving successful attempts to near-threshold values.
 - **Band is huge** (p10–p90 spans ~10 orders of magnitude). Exploits either max out (10K–10B, occasional overflow to 10⁹⁹) or fail to reach threshold (sub-10). Few attempts land in between.
-- **No monotone decrease over time**. The pool accumulates defenses, but privileged hackers keep finding new attack surfaces at roughly the same rate. Consistent with the "only 1 robust" observation — the system is in stalemate rather than collapsing to robustness.
+- **Mild downward drift in the final ~2h** — median dips from ~10⁴ to below 10² as the last 2 running tasks (065, 099) fail attempt after attempt against their progressively-hardened local state. This is what robustness looks like in the window leading up to it: task 065 went robust at minute 1010.
+- Overall the pool accumulates defenses but privileged hackers keep finding new attack surfaces. 5/44 robust rate is consistent with the "raises floor of exploit complexity, doesn't close surface" observation.
 
 ### Hacker solution code size over time
 
 ![Hacker solution.py size over time](hacker_code_len.png)
 
-Top panel = lines in `solution.py`, bottom = bytes. Same rolling window (n=15) as the reward plot. Median grows from ~30 lines / 700 B at batch start to ~45–55 lines / 1.3–1.6 kB by mid-run, with a p90 tail reaching ~90 lines / 3.5 kB around minute 300. Interpretation: as pool defenses accumulate, hackers need slightly more scaffolding (stack-frame walks, monkeypatch chains, caller inspection) to land exploits — but the growth is modest, roughly 1.5× not 10×. Consistent with the reward plot: defenses aren't shrinking exploit success, they're just raising the floor on exploit complexity.
+Top panel = lines in `solution.py`, bottom = bytes. Same rolling window (n=15) as the reward plot. Median grows from ~30 lines / 700 B at batch start to ~45–55 lines / 1.3–1.6 kB by mid-run, with a p90 tail reaching ~90 lines / 3.5 kB around minute 300–400 and again at minute 700–800. Across the full run: median = **43 lines / 1330 bytes**, max = **127 lines / 4083 bytes**. Interpretation: as pool defenses accumulate, hackers need slightly more scaffolding (stack-frame walks, monkeypatch chains, caller inspection) to land exploits — but the growth is modest, roughly 1.5× not 10×. Consistent with the reward plot: defenses aren't shrinking exploit success, they're just raising the floor on exploit complexity.
 
 ---
 
@@ -199,16 +200,17 @@ From `git log` of the pool, the fixers have pushed defenses against (non-exhaust
 ## What's working well
 
 - **Linear pool history** across 6 concurrent tasks — `git pull --rebase` + `git push` semantics handle concurrency cleanly. Agents occasionally hit non-fast-forward rejection and resolve via pull-rebase-push, as intended.
-- **Pool advances trigger skip-hacker** as designed: 138+ observed, each one a task saving the ~10min hacker cost by integrating defense from another task instead.
-- **`pool_sync_noop` correctly permissive**: fixers often inspect pool advances and decide "nothing to port," which is a valid outcome that doesn't burn an iteration on busywork.
+- **Pool advances trigger skip-hacker** as designed: 200 log occurrences, each one a task saving the ~8min hacker cost by integrating defense from another task instead.
+- **`pool_sync_noop` correctly permissive**: fixers inspected pool advances 17 times and decided "nothing to port," which is a valid outcome that doesn't burn an iteration on busywork.
 - **Fresh-task catch-up** works: all newly-entering tasks show skip-hacker on iter 0 (which was the point — they start by learning the pool's state rather than attacking naively).
-- **Cost is meaningfully lower per-task than non-pooled**: privileged-hacker-batch cost ≈ $7-8/task-iteration; jumper ≈ $3-5/task-iteration because ~⅓ of iterations are pool-sync-only.
+- **Cost is meaningfully lower per-task than non-pooled**: privileged-hacker-batch = $147.63 / ~32 tasks ≈ $4.6/task; jumper = $387.77 / 100 tasks ≈ $3.9/task, and jumper tasks ran more iterations each (up to 10 vs. interrupted partial run).
 
 ## What's not working as well as hoped
 
-- **Only 1 robust** out of 34 fully-run-through tasks. The privileged hacker is very strong; 10 iterations is often not enough to cover every attack surface. A larger `--max-iterations` (15-20) would likely produce more robust outcomes, at linear cost.
-- **OOM rate (~46%)** is higher than expected. 16GB MIG slices are too small for reductions/norms/pooling. Moving to 2g.40gb slices (4 concurrent, 32GB) would fix most precheck failures at the cost of throughput.
+- **Only 5 robust** out of 44 fully-run-through tasks (~11%). The privileged hacker is very strong; 10 iterations is often not enough to cover every attack surface. A larger `--max-iterations` (15–20) would likely produce more robust outcomes, at linear cost.
+- **OOM rate (56%)** is higher than expected. 16GB MIG slices are too small for reductions/norms/pooling. Moving to 2g.40gb slices (4 concurrent, 32GB) would fix most precheck failures at the cost of throughput.
 - **Attack-class rediscovery still happens**. Despite the pool, different tasks independently re-invent closures variants / frame-inspection / os._exit bypass. Pool commits read as a pile of similar-themed patches. A future iteration could explicitly deduplicate defenses by attack class before prompting the fixer.
+- **Tail under-utilization**. Last ~5h of the run had only 2 of 6 slots active as the hardest tasks (conv-transposed + triplet-margin-loss) ran their full 10 iterations. Adding a "steal iterations from robust/OOM tasks" mechanism would recover ~2–3h of wall clock.
 
 ---
 
@@ -226,4 +228,4 @@ From `git log` of the pool, the fixers have pushed defenses against (non-exhaust
 
 Bootstrap dir is the **propagated seed-001 defense** as it exists in `harbor/harden-kb/outputs/propagated_l1/*/tests/` — `eval_kernel.py` is identical across all 100 tasks there, so any task's dir is a valid starting point. The run is deterministic given the bootstrap dir, model, and hyper-parameters, modulo LLM sampling noise.
 
-Branch `jumper` at commit `28bc272` (= the "strip Your Goal from fixer prompt" commit, on top of `1ecdde9` "cleanup: dedup pool-sync-noop, drop dead code").
+Branch `jumper` at commit `eb06125` (head of the jumper branch at time of report). The code that ran the batch is at `28bc272` (= the "strip Your Goal from fixer prompt" commit on top of `1ecdde9` "cleanup: dedup pool-sync-noop, drop dead code"); subsequent commits are report / plot additions only.
