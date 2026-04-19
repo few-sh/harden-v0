@@ -114,7 +114,10 @@ Of the 44 tasks that actually hardened (excluding OOMs), 5/44 = **11% went robus
 ### Pool statistics
 
 - **Pool commits:** **185** (184 hardening + 1 `[bootstrap]`).
-- **Iteration outcomes** (across 428 iterations in per-task `result.json`):
+- **Successful hacks (reward ≥ 10×):** **223** across **428** iterations (among the 44 non-OOM tasks). Median hack reward 190,000×; max 9×10⁹⁹ (overflow).
+- **Hack/commit ratio ≈ 1.21**: 223 hacks begot 184 commits. The rest (201 "fixed" outcomes that didn't push a new commit) were **pool-syncs** — the fixer adopted an existing defense the pool had already learned from another task and didn't need to push anything novel. Each committed defense amortizes over multiple tasks via the skip-hacker mechanism (200 occurrences), so the effective work-per-commit is ~2× what the raw count suggests.
+- **Hacks per (non-OOM) task:** median 5, mean 5.1, over a mean of 9.7 iterations per task. Distribution: 1 hack (1 task), 2 (3), 3 (3), 4 (11), 5 (7), 6 (8), 7 (8), 8 (3).
+- **Iteration outcomes** (428 total):
   - `fixed`: 385 — fixer patched a hack (or ported pool state) and solver validated.
   - `pool_sync_noop`: 17 — fixer inspected pool advance and decided no local change needed.
   - `no_changes`: 6 — fixer ran but left the task dir untouched.
