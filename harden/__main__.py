@@ -183,6 +183,8 @@ def main(argv: list[str] | None = None) -> None:
         level=getattr(logging, args.log_level),
         format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
     )
+    # Reduce log noise from LiteLLM
+    logging.getLogger("LiteLLM").setLevel(logging.WARNING)
 
     if args.output_dir is None:
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -199,6 +201,12 @@ def main(argv: list[str] | None = None) -> None:
 
     args.resume = args.output_dir.exists()
     args.output_dir.mkdir(parents=True, exist_ok=True)
+
+    log_fmt = "%(asctime)s %(levelname)s [%(name)s] %(message)s"
+    file_handler = logging.FileHandler(args.output_dir / "harden_job.log")
+    file_handler.setFormatter(logging.Formatter(log_fmt))
+    logging.getLogger().addHandler(file_handler)
+
     logging.info("Output directory: %s", args.output_dir.resolve())
 
     if args.task_id:
@@ -224,19 +232,19 @@ def _run_single(args: argparse.Namespace) -> None:
     precheck = "oracle" if config.oracle else "solver-agent"
     framing = "kernelbench" if config.kernelbench_mode else "generic"
 
-    print(f"\n{'='*60}")
-    print(f"Task:       {config.task_id}")
-    print(f"Mode:       pre-check={precheck}, framing={framing}")
-    print(f"Status:     {status}")
-    print(f"Iterations: {len(iterations)}")
+    logging.info("=" * 60)
+    logging.info("Task:       %s", config.task_id)
+    logging.info("Mode:       pre-check=%s, framing=%s", precheck, framing)
+    logging.info("Status:     %s", status)
+    logging.info("Iterations: %d", len(iterations))
     for it in iterations:
         hr = it.get("hack_reward")
         hr_str = f"{hr:.2f}" if hr is not None else "N/A"
-        print(f"  [{it['iteration']}] hack_{metric}={hr_str}  outcome={it.get('outcome')}")
-    print(f"Result:     {config.result_path}")
+        logging.info("  [%d] hack_%s=%s  outcome=%s", it["iteration"], metric, hr_str, it.get("outcome"))
+    logging.info("Result:     %s", config.result_path)
     if "hardened_dir" in result:
-        print(f"Hardened:   {result['hardened_dir']}")
-    print(f"{'='*60}")
+        logging.info("Hardened:   %s", result["hardened_dir"])
+    logging.info("=" * 60)
 
 
 def _run_batch(args: argparse.Namespace) -> None:
