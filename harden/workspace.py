@@ -378,7 +378,7 @@ def prepare_fixer_environment(
     if pool_upstream_url:
         compose_path = env_dir / "docker-compose.yaml"
         if not compose_path.is_file():
-            compose_path.write_text("services:\n  main: {}\n")
+            compose_path.write_text("services:\n  main:\n    build: .\n")
         _add_extra_hosts_to_compose(compose_path)
 
     if additions:
