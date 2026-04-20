@@ -133,7 +133,7 @@ async def harden_batch(config: BatchHardenConfig) -> list[dict]:
         # Process results as they arrive so batch_summary.json is updated continuously;
         # the unconditional call after the loop handles finished=True and the empty
         # tasks_to_run edge case (all tasks already done on resume).
-        coros = list(asyncio.as_completed([_run_one(task_id) for task_id in tasks_to_run]))
+        coros = list(asyncio.as_completed([_run_one(task_id, pool_server) for task_id in tasks_to_run]))
         for coro in coros:
             result = await coro
             results.append(result)
