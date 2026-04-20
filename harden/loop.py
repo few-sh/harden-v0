@@ -1,10 +1,18 @@
 """Main hardening loop orchestration.
 
-Dispatches pre-check and post-fixer validation through `_run_solver`:
-  * oracle=True  — `run_oracle_solver` (deterministic, speedup >= solver_threshold)
-  * oracle=False — `run_solver_agent` (terminus-2, reward >= solver_threshold)
+Two orthogonal mode flags:
+  * `cfg.oracle`           — pre-check dispatch (deterministic vs agent solver)
+  * `cfg.kernelbench_mode` — prompt/template bundle + metric semantics
+                             (KB: speedup / `eval_kernel.py`; generic: reward /
+                             `test_outputs.py`)
 
-Hack success is gated on `cfg.hack_threshold` (reward/speedup depending on mode).
+`_run_solver` routes on `cfg.oracle`:
+  * True  — `run_oracle_solver` (deterministic reference copy)
+  * False — `run_solver_agent` (Terminus-2 agent solver)
+
+The threshold values (`cfg.hack_threshold`, `cfg.solver_threshold`) are
+compared against whatever the verifier returns; the *name* of that metric
+(speedup vs reward) follows `cfg.kernelbench_mode`, not `cfg.oracle`.
 """
 
 import json
@@ -27,6 +35,7 @@ from .instructions import (
     build_hacker_instruction,
     build_targeted_replay_instruction,
 )
+from .pool import PoolCursor, PoolServer
 from .trajectory import extract_hack_summary
 from .workspace import (
     append_to_instruction,
@@ -63,7 +72,7 @@ async def _run_targeted_replay(
         replace_instruction(
             replay_parent, cfg.task_id,
             build_targeted_replay_instruction(
-                original_instruction, hack_summary, oracle=cfg.oracle
+                original_instruction, hack_summary, kernelbench_mode=cfg.kernelbench_mode
             ),
         )
         if cfg.hacker_privileged and prepare_privileged_hacker_environment(
@@ -138,8 +147,23 @@ def _validate_task_dir(task_dir: Path) -> None:
         )
 
 
-async def harden_task(config: HardenConfig) -> dict:
-    """Run the full adversarial hardening loop for a single task."""
+async def harden_task(
+    config: HardenConfig,
+    pool_server: PoolServer | None = None,
+) -> dict:
+    """Run the full adversarial hardening loop for a single task.
+
+    When `config.pool_enabled` AND `pool_server` is provided, the loop runs in
+    pooled (jumper) mode: fixer containers clone/push a shared defense repo,
+    and iterations where the pool has advanced since this task's last iteration
+    skip the hacker step (treating it as a sync iteration).
+    """
+    if config.pool_enabled and pool_server is None:
+        raise ValueError(
+            "config.pool_enabled=True but pool_server was not passed to harden_task. "
+            "Use pool_context() or pass pool_server explicitly."
+        )
+    pooled = config.pool_enabled and pool_server is not None
     original_dir = config.task_dir
     _validate_task_dir(original_dir)
 
@@ -151,6 +175,8 @@ async def harden_task(config: HardenConfig) -> dict:
         "status": "unknown",
         "iterations": [],
         "oracle": config.oracle,
+        "pool_enabled": pooled,
+        "kernelbench_mode": config.kernelbench_mode,
     }
 
     hardened_parent = create_hardened_copy(original_dir, output, resume=config.resume)
@@ -203,6 +229,15 @@ async def harden_task(config: HardenConfig) -> dict:
     # Once hardened/ diverges from the base image, every build must use force_build + harden image.
     hardened_dirty: bool = False
 
+    # Pooled (jumper) state — PoolCursor owns the advance/persist invariant.
+    pool_cursor: PoolCursor | None = None
+    if pooled:
+        pool_cursor = PoolCursor(pool_server, config.task_output_dir, config.task_id)
+        logger.info(
+            "Pooled mode: last_seen pool SHA = %s",
+            (pool_cursor.sha or "(fresh)")[:8],
+        )
+
     for iteration in range(config.max_iterations):
         iter_info: dict = {
             "iteration": iteration,
@@ -213,7 +248,30 @@ async def harden_task(config: HardenConfig) -> dict:
         }
         logger.info("=== Iteration %d ===", iteration)
 
-        if reuse_hack is not None:
+        # Pool advance check (pooled mode only). iter_start() bumps the in-memory
+        # cursor but does not persist — a crash mid-iter won't silently "consume"
+        # pool commits we never actually integrated.
+        pool_advanced = False
+        pool_log = ""
+        previous_last_seen = ""
+        if pool_cursor is not None:
+            pool_advanced, pool_log, previous_last_seen, current_pool_sha = (
+                pool_cursor.iter_start()
+            )
+            iter_info["pool_sha_start"] = current_pool_sha
+            iter_info["pool_advanced"] = pool_advanced
+            if pool_advanced:
+                logger.info(
+                    "Pool advanced %s..%s — skipping hacker.",
+                    previous_last_seen[:8], current_pool_sha[:8],
+                )
+                # Pool situation changed; the reused hack may no longer apply.
+                reuse_hack = None
+
+        if pool_advanced:
+            hack_summary = "(no new hack this iteration — the shared pool has advanced; see the 'Pool advanced' section)"
+            hack_reward = 0.0
+        elif reuse_hack is not None:
             hack_summary, hack_reward = reuse_hack
             reuse_hack = None
             logger.info("Reusing previous hack (reward=%.2f) — fixer failed, nothing changed.", hack_reward)
@@ -224,7 +282,9 @@ async def harden_task(config: HardenConfig) -> dict:
             for attempt in range(config.hacker_retries):
                 hacker_parent = create_working_copy(hardened_task_dir, output / "hacker_task")
                 original_instruction = (original_dir / "instruction.md").read_text()
-                hacker_instruction = build_hacker_instruction(original_instruction, oracle=config.oracle)
+                hacker_instruction = build_hacker_instruction(
+                    original_instruction, kernelbench_mode=config.kernelbench_mode
+                )
                 replace_instruction(hacker_parent, config.task_id, hacker_instruction)
 
                 hacker_privileged_modified = False
@@ -275,7 +335,7 @@ async def harden_task(config: HardenConfig) -> dict:
                         hack_reward, config.hack_threshold)
             hack_summary = extract_hack_summary(hacker_trial)
 
-        iter_info["hack_reward"] = hack_reward
+        iter_info["hack_reward"] = hack_reward if not pool_advanced else None
         original_instruction = (original_dir / "instruction.md").read_text()
 
         fixer_instruction = build_fixer_instruction(
@@ -283,12 +343,19 @@ async def harden_task(config: HardenConfig) -> dict:
             has_previous_attempt=previous_fixer_trial is not None,
             has_previous_solver=previous_solver_trial is not None,
             oracle=config.oracle,
+            kernelbench_mode=config.kernelbench_mode,
             legitimate_marker=config.legitimate_marker,
+            pool_enabled=pooled,
+            pool_log=pool_log if pool_advanced else None,
+            last_seen_sha=previous_last_seen,
+            task_id=config.task_id,
+            iteration=iteration,
         )
         fixer_parent = create_working_copy(hardened_task_dir, output / "fixer_task")
         replace_instruction(fixer_parent, config.task_id, fixer_instruction)
         prepare_fixer_environment(
-            fixer_parent, config.task_id, previous_fixer_trial, previous_solver_trial
+            fixer_parent, config.task_id, previous_fixer_trial, previous_solver_trial,
+            pool_upstream_url=pool_server.upstream_url if pooled else None,
         )
 
         # Fixer always modifies the Dockerfile → force_build with harden image.
@@ -312,8 +379,36 @@ async def harden_task(config: HardenConfig) -> dict:
             solver_parent = create_working_copy(hardened_task_dir, output / "solver_validate")
             fix_result = extract_fixer_artifacts(
                 fixer_trial, solver_parent, config.task_id,
-                oracle=config.oracle, legitimate_marker=config.legitimate_marker,
+                kernelbench_mode=config.kernelbench_mode,
+                legitimate_marker=config.legitimate_marker,
             )
+            # Shared pool-sync-noop path: on a pool-advanced iter, either
+            # `no_changes` or `legitimate` from the fixer are valid acks of
+            # the pool advance (nothing to port locally / no hack to legitimize).
+            # Both collapse to the same cleanup + continue.
+            pool_sync_noop_reason: str | None = None
+            if pool_advanced and fix_result == "no_changes":
+                pool_sync_noop_reason = (
+                    "Fixer made no local changes (pool-sync iteration acknowledged)."
+                )
+            elif pool_advanced and fix_result == "legitimate":
+                pool_sync_noop_reason = (
+                    "Fixer marked .legitimate in a pool-sync iter; "
+                    "ignoring (no hack to legitimize)."
+                )
+            if pool_sync_noop_reason is not None:
+                logger.info(pool_sync_noop_reason)
+                iter_info["outcome"] = "pool_sync_noop"
+                reuse_hack = None
+                previous_failure = None
+                previous_fixer_trial = None
+                previous_solver_trial = None
+                legitimate_streak = 0
+                if pool_cursor is not None:
+                    pool_cursor.persist()
+                result["iterations"].append(iter_info)
+                continue
+
             if fix_result == "no_changes":
                 logger.warning("Fixer did not commit any changes")
                 previous_failure = (
@@ -328,6 +423,8 @@ async def harden_task(config: HardenConfig) -> dict:
                             legitimate_streak, config.legitimate_threshold)
                 iter_info["outcome"] = "legitimate"
                 iter_info["fix_applied"] = False
+                if pool_cursor is not None:
+                    pool_cursor.persist()
                 if legitimate_streak >= config.legitimate_threshold:
                     logger.info("Confirmed legitimate after %d consecutive flags. Task is robust.",
                                 config.legitimate_threshold)
@@ -360,7 +457,10 @@ async def harden_task(config: HardenConfig) -> dict:
                     logger.info("Fix validated — solver passes (reward=%.2f).", solver_reward)
 
                     replay_reward: float | None = None
-                    if config.replay_enabled:
+                    # Skip replay on pool-sync iters: hack_summary is a sentinel
+                    # placeholder (no real hack this iter) so replay has nothing
+                    # meaningful to reproduce.
+                    if config.replay_enabled and not pool_advanced:
                         iter_info["replay_attempted"] = True
                         replay_reward = await _run_targeted_replay(
                             config, hardened_task_dir, fixer_trial, hack_summary,
@@ -389,6 +489,14 @@ async def harden_task(config: HardenConfig) -> dict:
                         previous_fixer_trial = None
                         previous_solver_trial = None
                         legitimate_streak = 0
+                        if pool_cursor is not None:
+                            # Prevents next iter from burning a pool-sync cycle
+                            # just to ack our own push; `advance_...if_newer`
+                            # is a no-op when we didn't push this iter.
+                            own_sha = pool_cursor.advance_to_own_commit_if_newer()
+                            if own_sha:
+                                iter_info["pool_own_commit"] = own_sha
+                            pool_cursor.persist()
                 else:
                     logger.warning("Fix broke solver (reward=%.2f < %.2f). Reverting.",
                                    solver_reward, config.solver_threshold)
@@ -401,7 +509,10 @@ async def harden_task(config: HardenConfig) -> dict:
             previous_failure = str(e)
             legitimate_streak = 0
 
-        if not fix_applied:
+        if not fix_applied and not pool_advanced:
+            # Reuse the hack next iter if the fixer failed, but only when we
+            # actually had a hack. On pool-sync iters hack_summary is a
+            # sentinel string — reusing it would hand the next fixer nonsense.
             reuse_hack = (hack_summary, hack_reward)
 
         iter_info["fix_applied"] = fix_applied
