@@ -17,6 +17,7 @@ from pathlib import Path
 
 from .config import BatchHardenConfig, HardenConfig
 from .loop import harden_task
+from .pool import PoolServer, pool_context
 
 logger = logging.getLogger(__name__)
 
@@ -92,7 +93,7 @@ async def harden_batch(config: BatchHardenConfig) -> list[dict]:
     progress = {"done": 0, "total": n_to_run}
     progress_lock = asyncio.Lock()
 
-    async def _run_one(task_id: str) -> dict:
+    async def _run_one(task_id: str, pool_server: PoolServer | None) -> dict:
         # Stagger container starts to avoid thundering herd on batch launch.
         await asyncio.sleep(random.uniform(0, 10))
         async with semaphore:
@@ -100,7 +101,7 @@ async def harden_batch(config: BatchHardenConfig) -> list[dict]:
             try:
                 task_config = config.make_task_config(task_id)
                 _save_task_config(task_config)
-                result = await harden_task(task_config)
+                result = await harden_task(task_config, pool_server=pool_server)
             except Exception as e:
                 logger.error("[%s] Failed with exception: %s", task_id, e)
                 result = {"task_id": task_id, "status": "error", "error": str(e)}
@@ -128,14 +129,15 @@ async def harden_batch(config: BatchHardenConfig) -> list[dict]:
         except (json.JSONDecodeError, OSError):
             logger.warning("[%s] Could not reload existing result; omitted from summary", task_id)
 
-    # Process results as they arrive so batch_summary.json is updated continuously;
-    # the unconditional call after the loop handles finished=True and the empty
-    # tasks_to_run edge case (all tasks already done on resume).
-    coros = list(asyncio.as_completed([_run_one(task_id) for task_id in tasks_to_run]))
-    for coro in coros:
-        result = await coro
-        results.append(result)
-        _print_summary(results, config, total=total, finished=False)
+    with pool_context(config) as pool_server:
+        # Process results as they arrive so batch_summary.json is updated continuously;
+        # the unconditional call after the loop handles finished=True and the empty
+        # tasks_to_run edge case (all tasks already done on resume).
+        coros = list(asyncio.as_completed([_run_one(task_id, pool_server) for task_id in tasks_to_run]))
+        for coro in coros:
+            result = await coro
+            results.append(result)
+            _print_summary(results, config, total=total, finished=False)
     _print_summary(results, config, total=total, finished=True)
     return results
 

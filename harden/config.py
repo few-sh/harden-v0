@@ -82,6 +82,11 @@ class HardenConfig:
     force_build: bool = False
     image_name: str | None = None
 
+    # Jumper / pooled mode: share a defense repo across tasks via a host-side git daemon.
+    pool_enabled: bool = False
+    pool_bootstrap_dir: Path | None = None
+    pool_port: int = 9418
+
     # If True, preserve an existing output/hardened/<task>/ from a prior run.
     resume: bool = False
 

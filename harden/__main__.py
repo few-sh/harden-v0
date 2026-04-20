@@ -9,6 +9,7 @@ from pathlib import Path
 from .batch import harden_batch
 from .config import DEFAULT_TASKS_DIR, BatchHardenConfig, HardenConfig
 from .loop import harden_task
+from .pool import pool_context
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -113,6 +114,16 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--image-name", default=None,
                         help="Override image name so harden runs don't clobber the base image")
 
+    # Jumper / pooled mode
+    parser.add_argument("--pool-enabled", action="store_true",
+                        help="Enable jumper pooled mode: share a defense repo across tasks via "
+                             "a host-side git daemon. Fixer containers clone/push to the pool. "
+                             "Linux Docker Engine >= 20.10 only (uses extra_hosts:host-gateway).")
+    parser.add_argument("--pool-bootstrap-dir", type=Path, default=None,
+                        help="Hardened task dir to bootstrap the pool from (required if --pool-enabled).")
+    parser.add_argument("--pool-port", type=int, default=9418,
+                        help="Port for git daemon (default 9418; auto-bumps if busy).")
+
     # Batch-only
     parser.add_argument("--max-concurrent", type=int, default=4,
                         help="Max concurrent Docker containers (batch mode)")
@@ -157,6 +168,9 @@ def _config_kwargs(args: argparse.Namespace) -> dict:
         harbor_config=args.harbor_config,
         force_build=args.force_build,
         image_name=args.image_name,
+        pool_enabled=args.pool_enabled,
+        pool_bootstrap_dir=args.pool_bootstrap_dir,
+        pool_port=args.pool_port,
         resume=args.resume,
     )
 
@@ -177,6 +191,12 @@ def main(argv: list[str] | None = None) -> None:
     if args.harbor_config is not None and not args.harbor_config.is_file():
         parser.error(f"Harbor config file not found: {args.harbor_config}")
 
+    if args.pool_enabled:
+        if args.pool_bootstrap_dir is None:
+            parser.error("--pool-enabled requires --pool-bootstrap-dir")
+        if not args.pool_bootstrap_dir.is_dir():
+            parser.error(f"--pool-bootstrap-dir not a directory: {args.pool_bootstrap_dir}")
+
     args.resume = args.output_dir.exists()
     args.output_dir.mkdir(parents=True, exist_ok=True)
     logging.info("Output directory: %s", args.output_dir.resolve())
@@ -189,7 +209,12 @@ def main(argv: list[str] | None = None) -> None:
 
 def _run_single(args: argparse.Namespace) -> None:
     config = HardenConfig(task_id=args.task_id, **_config_kwargs(args))
-    result = asyncio.run(harden_task(config))
+
+    async def _go():
+        with pool_context(config) as pool_server:
+            return await harden_task(config, pool_server=pool_server)
+
+    result = asyncio.run(_go())
 
     status = result.get("status", "unknown")
     iterations = result.get("iterations", [])

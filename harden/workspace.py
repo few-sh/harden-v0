@@ -10,6 +10,8 @@ import shutil
 import subprocess
 from pathlib import Path
 
+import yaml
+
 from .agent import read_verifier_output
 from .trajectory import extract_hack_summary
 
@@ -194,17 +196,60 @@ def prepare_privileged_hacker_environment(
     return True
 
 
+def _add_extra_hosts_to_compose(compose_path: Path) -> None:
+    """Ensure the `main` service in docker-compose.yaml can reach the host.
+
+    Adds `extra_hosts: - "host.docker.internal:host-gateway"` so pool URLs of
+    the form `git://host.docker.internal:<port>/` resolve. Idempotent.
+
+    Requires Linux Docker Engine >= 20.10 (the `host-gateway` special value).
+    On older Docker the container's `host.docker.internal` won't resolve and
+    the pool clone will fail.
+    """
+    if not compose_path.is_file():
+        raise RuntimeError(
+            f"docker-compose.yaml missing at {compose_path} — cannot configure pool access"
+        )
+    data = yaml.safe_load(compose_path.read_text()) or {}
+    services = data.get("services")
+    if not isinstance(services, dict) or "main" not in services:
+        raise RuntimeError(
+            f"docker-compose.yaml at {compose_path} has no `services.main` entry; "
+            f"pool access requires a `main` service to attach extra_hosts to"
+        )
+    main = services["main"]
+    if not isinstance(main, dict):
+        raise RuntimeError(
+            f"docker-compose.yaml at {compose_path}: `services.main` must be a mapping"
+        )
+    hosts = main.get("extra_hosts") or []
+    if isinstance(hosts, dict):
+        # `extra_hosts: {host.docker.internal: host-gateway}` form.
+        hosts = [f"{k}:{v}" for k, v in hosts.items()]
+    entry = "host.docker.internal:host-gateway"
+    if entry not in hosts:
+        hosts.append(entry)
+    main["extra_hosts"] = hosts
+    compose_path.write_text(yaml.safe_dump(data, sort_keys=False))
+
+
 def prepare_fixer_environment(
     working_copy_parent: Path,
     task_id: str,
     previous_attempt: Path | None = None,
     previous_solver_trial: Path | None = None,
+    pool_upstream_url: str | None = None,
 ) -> None:
     """Make tests/, solution/, and artifact copies available inside the Docker image.
 
     /logs/artifacts/ is pre-populated via staging because Harbor bind-mounts /logs/
     at runtime, overwriting build-time COPYs. An entrypoint script copies from
     staging into /logs/artifacts/ after the bind mount is in place.
+
+    When `pool_upstream_url` is set (jumper mode), the fixer image is wired so the
+    entrypoint clones the shared pool to /pool/ from `host.docker.internal:<port>`.
+    The task's docker-compose.yaml gets an `extra_hosts` entry mapping
+    host.docker.internal to the host-gateway so that URL resolves.
     """
     task_dir = working_copy_parent / task_id
     env_dir = task_dir / "environment"
@@ -282,6 +327,32 @@ def prepare_fixer_environment(
         additions.append("COPY previous_solver/ /previous_solver/")
         additions.append("RUN chmod -R a-w /previous_solver/")
 
+    pool_clone_block = ""
+    if pool_upstream_url:
+        additions.append(f'ENV POOL_UPSTREAM_URL="{pool_upstream_url}"')
+        # Fail-fast: if the pool URL was wired in but we can't reach it after
+        # 5 retries, exit the entrypoint with an error. Running the fixer
+        # against a missing /pool/ would silently mis-execute the prompt's
+        # pool instructions; better to surface the failure on the host.
+        pool_clone_block = (
+            'if [ -n "$POOL_UPSTREAM_URL" ]; then\n'
+            "  rm -rf /pool\n"
+            "  for i in 1 2 3 4 5; do\n"
+            '    git clone "$POOL_UPSTREAM_URL" /pool && break\n'
+            "    sleep 1\n"
+            "  done\n"
+            "  if [ ! -d /pool/.git ]; then\n"
+            '    echo "[ERROR] Failed to clone pool from $POOL_UPSTREAM_URL after 5 retries" >&2\n'
+            "    exit 1\n"
+            "  fi\n"
+            "  (cd /pool && \\\n"
+            "    git config user.email fixer@harden && \\\n"
+            f"    git config user.name \"harden-fixer-{task_id}\" && \\\n"
+            "    git config pull.rebase true)\n"
+            "  git config --global --add safe.directory /pool\n"
+            "fi\n"
+        )
+
     entrypoint_script = env_dir / "harden-entrypoint.sh"
     entrypoint_script.write_text(
         "#!/bin/sh\n"
@@ -299,11 +370,15 @@ def prepare_fixer_environment(
         "git config --global --add safe.directory /logs/artifacts\n"
         "(cd /logs/artifacts && git init -q && git add -A && "
         "git commit -q -m initial && git tag initial)\n"
+        + pool_clone_block +
         'exec "$@"\n'
     )
     entrypoint_script.chmod(0o755)
     additions.append("COPY harden-entrypoint.sh /harden-entrypoint.sh")
     additions.append('ENTRYPOINT ["/harden-entrypoint.sh"]')
+
+    if pool_upstream_url:
+        _add_extra_hosts_to_compose(env_dir / "docker-compose.yaml")
 
     if additions:
         content = dockerfile.read_text()
