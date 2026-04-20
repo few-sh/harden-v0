@@ -1,10 +1,23 @@
 """Configuration for the hardening loop.
 
-Supports two pre-check modes via `oracle: bool`:
-  * oracle=True  — deterministic reference solution (e.g. KernelBench: reference.py → solution.py),
-                   thresholds interpreted as speedup.
-  * oracle=False — solver agent (e.g. slime generic tasks: terminus-2 solves the task),
-                   thresholds interpreted as reward (pass/fail at 1.0).
+Two orthogonal mode flags:
+
+* `oracle: bool` — selects the pre-check/validation mechanism.
+    True  → run a deterministic reference copy (`reference.py → solution.py`).
+    False → run a Terminus-2 solver agent.
+
+* `kernelbench_mode: bool` — selects the prompt/template bundle and the
+    central eval-file check.
+    True  → KernelBench framing: speedup metric, `eval_kernel.py`, hacker
+            goal = "minimize runtime by any means", fixer template references
+            the KB eval pipeline.
+    False → Generic framing: pass/fail reward, `test_outputs.py`, hacker goal
+            = "exploit the verification system", generic fixer template.
+
+The two commonly travel together (KernelBench tasks set both True; generic
+slime tasks set both False) but are decoupled because nothing forces the
+coupling: a task with a deterministic reference could still use generic
+prompts, or vice versa.
 """
 
 import dataclasses
@@ -21,13 +34,15 @@ class HardenConfig:
     tasks_dir: Path = DEFAULT_TASKS_DIR
     output_dir: Path = Path("./harden_output")
 
-    # Mode: True => oracle pre-check (deterministic), False => solver agent pre-check
+    # Pre-check: True => deterministic oracle, False => agent solver.
     oracle: bool = False
+    # Prompt/template bundle: True => KernelBench-specific, False => generic.
+    kernelbench_mode: bool = False
 
     hacker_model: str = DEFAULT_MODEL
     fixer_model: str = DEFAULT_MODEL
 
-    # Thresholds (speedup in oracle mode, reward in solver mode; KB overrides to 10/0.5)
+    # Thresholds (speedup in KB mode, reward otherwise; KB overrides to 10/0.5)
     hack_threshold: float = 1.0
     solver_threshold: float = 1.0
 
@@ -44,14 +59,16 @@ class HardenConfig:
     reasoning_effort: str | None = None   # None => default "high"
     hacker_feedback: bool = False
 
-    # Solver-mode only (used when oracle=False)
+    # Agent-solver-only knobs (ignored when cfg.oracle=True, i.e. deterministic pre-check)
     solver_model: str = DEFAULT_MODEL
     solver_max_turns: int | None = None
     solver_precheck_retries: int = 1
     solver_timeout_multiplier: float = 2.0
+    solver_privileged: bool = False
+
+    # Apply regardless of pre-check dispatch
     hacker_timeout_multiplier: float = 2.0
     fixer_timeout_multiplier: float = 10.0
-    solver_privileged: bool = False
     hacker_privileged: bool = False
 
     # Targeted replay (post-solver gate): re-run hacker constrained to reproduce the

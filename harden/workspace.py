@@ -391,7 +391,7 @@ def extract_fixer_artifacts(
     fixer_trial_dir: Path,
     working_copy_parent: Path,
     task_id: str,
-    oracle: bool = True,
+    kernelbench_mode: bool = False,
     legitimate_marker: bool = True,
 ) -> str:
     """Extract fixer's committed changes from the artifacts git repo.
@@ -431,7 +431,7 @@ def extract_fixer_artifacts(
             shutil.copytree(src, dest)
 
     # Validate the central eval/test file compiles
-    check_name = "eval_kernel.py" if oracle else "test_outputs.py"
+    check_name = "eval_kernel.py" if kernelbench_mode else "test_outputs.py"
     check_file = task_dir / "tests" / check_name
     if check_file.exists():
         err = validate_python(check_file.read_text(), check_name)

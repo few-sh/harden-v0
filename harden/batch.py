@@ -45,8 +45,8 @@ def _save_batch_config(config: BatchHardenConfig) -> None:
     logger.info("Saved batch configuration to %s", config_path)
 
 
-def _is_completed(output_dir: Path, task_id: str, oracle: bool) -> bool:
-    """A task is complete only if its result is terminal AND its mode matches."""
+def _is_completed(output_dir: Path, task_id: str, oracle: bool, kernelbench_mode: bool) -> bool:
+    """A task is complete only if its result is terminal AND both mode flags match."""
     result_path = output_dir / task_id / "result.json"
     if not result_path.exists():
         return False
@@ -56,10 +56,13 @@ def _is_completed(output_dir: Path, task_id: str, oracle: bool) -> bool:
         return False
     if result.get("status") not in _TERMINAL_STATUSES:
         return False
-    if result.get("oracle") != oracle:
+    prev_oracle = result.get("oracle")
+    prev_kb = result.get("kernelbench_mode", prev_oracle)  # back-compat: old results set only `oracle`
+    if prev_oracle != oracle or prev_kb != kernelbench_mode:
         logger.warning(
-            "[%s] Previous result has oracle=%s but current config has oracle=%s — re-running.",
-            task_id, result.get("oracle"), oracle,
+            "[%s] Prior result mode mismatch "
+            "(oracle %s→%s, kernelbench_mode %s→%s) — re-running.",
+            task_id, prev_oracle, oracle, prev_kb, kernelbench_mode,
         )
         return False
     return True
@@ -72,20 +75,22 @@ async def harden_batch(config: BatchHardenConfig) -> list[dict]:
 
     if config.resume:
         skipped = [t for t in config.task_ids
-                   if _is_completed(config.output_dir, t, config.oracle)]
+                   if _is_completed(config.output_dir, t, config.oracle, config.kernelbench_mode)]
         tasks_to_run = [t for t in config.task_ids if t not in set(skipped)]
         if skipped:
             logger.info("Resuming: skipping %d completed tasks", len(skipped))
     else:
+        skipped = []
         tasks_to_run = list(config.task_ids)
 
-    total = len(tasks_to_run)
+    total = len(config.task_ids)
+    n_to_run = len(tasks_to_run)
     logger.info(
-        "Batch hardening: %d tasks, max %d concurrent containers, oracle=%s",
-        total, config.max_concurrent_containers, config.oracle,
+        "Batch hardening: %d tasks (%d to run), max %d concurrent containers, oracle=%s kernelbench_mode=%s",
+        total, n_to_run, config.max_concurrent_containers, config.oracle, config.kernelbench_mode,
     )
 
-    progress = {"done": 0, "total": total}
+    progress = {"done": 0, "total": n_to_run}
     progress_lock = asyncio.Lock()
 
     async def _run_one(task_id: str, pool_server: PoolServer | None) -> dict:
@@ -110,27 +115,41 @@ async def harden_batch(config: BatchHardenConfig) -> list[dict]:
             n_iters = len(result.get("iterations", []))
             logger.info(
                 "[%d/%d] %s: %s (%d iters, %.0fs)",
-                n, total, task_id, status, n_iters, elapsed,
+                n, n_to_run, task_id, status, n_iters, elapsed,
             )
             return result
 
+    # Pre-populate results with previously completed tasks so the summary
+    # reflects the full batch, not just the current run.
+    results: list[dict] = []
+    for task_id in skipped:
+        result_path = config.output_dir / task_id / "result.json"
+        try:
+            results.append(json.loads(result_path.read_text()))
+        except (json.JSONDecodeError, OSError):
+            logger.warning("[%s] Could not reload existing result; omitted from summary", task_id)
+
     with pool_context(config) as pool_server:
-        results = await asyncio.gather(
-            *[_run_one(t, pool_server) for t in tasks_to_run]
-        )
+        # Process results as they arrive so batch_summary.json is updated continuously;
+        # the unconditional call after the loop handles finished=True and the empty
+        # tasks_to_run edge case (all tasks already done on resume).
+        coros = list(asyncio.as_completed([_run_one(task_id) for task_id in tasks_to_run]))
+        for coro in coros:
+            result = await coro
+            results.append(result)
+            _print_summary(results, config, total=total, finished=False)
+    _print_summary(results, config, total=total, finished=True)
+    return results
 
-    _print_summary(results, config)
-    return list(results)
 
-
-def _print_summary(results: list[dict], config: BatchHardenConfig) -> None:
+def _print_summary(results: list[dict], config: BatchHardenConfig, *, total: int, finished: bool = False) -> None:
     counts = Counter(r.get("status", "unknown") for r in results)
-    total = len(results)
+    n_finished = len(results)
 
     print(f"\n{'='*60}")
     print("Batch Hardening Summary")
     print(f"{'='*60}")
-    print(f"Total tasks processed: {total}")
+    print(f"Total tasks: {total}  |  Finished: {n_finished}")
     for status in ["robust", "max_iterations", "solver_failed_precheck", "error", "unknown"]:
         if counts[status]:
             print(f"  {status:.<30} {counts[status]}")
@@ -139,7 +158,9 @@ def _print_summary(results: list[dict], config: BatchHardenConfig) -> None:
     summary_path = config.output_dir / "batch_summary.json"
     summary_path.parent.mkdir(parents=True, exist_ok=True)
     summary = {
+        "harden_run_finished": finished,
         "total": total,
+        "finished": n_finished,
         "counts": dict(counts),
         "tasks": [
             {"task_id": r.get("task_id"), "status": r.get("status")}
