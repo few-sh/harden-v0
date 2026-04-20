@@ -207,9 +207,7 @@ def _add_extra_hosts_to_compose(compose_path: Path) -> None:
     the pool clone will fail.
     """
     if not compose_path.is_file():
-        raise RuntimeError(
-            f"docker-compose.yaml missing at {compose_path} — cannot configure pool access"
-        )
+        raise RuntimeError(f"docker-compose.yaml missing at {compose_path}")
     data = yaml.safe_load(compose_path.read_text()) or {}
     services = data.get("services")
     if not isinstance(services, dict) or "main" not in services:
@@ -378,7 +376,10 @@ def prepare_fixer_environment(
     additions.append('ENTRYPOINT ["/harden-entrypoint.sh"]')
 
     if pool_upstream_url:
-        _add_extra_hosts_to_compose(env_dir / "docker-compose.yaml")
+        compose_path = env_dir / "docker-compose.yaml"
+        if not compose_path.is_file():
+            compose_path.write_text("services:\n  main:\n    build: .\n")
+        _add_extra_hosts_to_compose(compose_path)
 
     if additions:
         content = dockerfile.read_text()
