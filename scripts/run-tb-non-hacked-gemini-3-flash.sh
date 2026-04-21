@@ -1,7 +1,7 @@
 BOOTSTRAP_TASK=password-recovery
 cd ~/truthserum/harden-v0 \
 && uv run python harden.py --tasks-dir ../datasets/TerminalBench-original-non-hacked \
---all
+--all \
 -c ../datasets/gemini-terminus2-harden.yaml \
 --solver-model gemini/gemini-3-flash-preview \
 --hacker-model gemini/gemini-3-flash-preview \
