@@ -102,10 +102,21 @@ def prepare_solver_environment(
     shutil.copytree(solution_src, solution_dest)
 
     content = dockerfile.read_text()
+
+    # Find the last USER directive so we can restore it after the root chmod
+    last_user = None
+    for line in content.splitlines():
+        stripped = line.strip()
+        if stripped.upper().startswith("USER "):
+            last_user = stripped[5:].strip()
+
+    restore = f"USER {last_user}\n" if last_user and last_user != "root" else ""
     content += (
         "\n# Added by harden: mount reference solution for solver\n"
+        "USER root\n"
         "COPY solution/ /solution/\n"
         "RUN chmod -R a-w /solution/\n"
+        + restore
     )
     dockerfile.write_text(content)
     return True
