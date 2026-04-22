@@ -11,7 +11,7 @@ if [[ $# -ne 1 ]]; then
 	exit 1
 fi
 
-target_dir=$1
+target_dir="$1"
 
 if [[ ! -d "$target_dir" ]]; then
 	echo "Error: directory does not exist: $target_dir" >&2
