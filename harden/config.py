@@ -86,6 +86,10 @@ class HardenConfig:
     pool_enabled: bool = False
     pool_bootstrap_dir: Path | None = None
     pool_port: int = 9418
+    # After this many consecutive pool-sync skips, force the hacker to run regardless
+    # of pool state. Pool-sync iterations never count toward max_iterations,
+    # (so this also bounds the overhead between real hack iterations.)
+    pool_max_consecutive_syncs: int = 1
 
     # If True, preserve an existing output/hardened/<task>/ from a prior run.
     resume: bool = False

@@ -123,6 +123,9 @@ def _build_parser() -> argparse.ArgumentParser:
                         help="Hardened task dir to bootstrap the pool from (required if --pool-enabled).")
     parser.add_argument("--pool-port", type=int, default=9418,
                         help="Port for git daemon (default 9418; auto-bumps if busy).")
+    parser.add_argument("--pool-max-consecutive-syncs", type=int, default=1,
+                        help="Force the hacker after this many consecutive pool-sync skips (default: 1). "
+                             "Pool-sync iterations never count toward --max-iterations.")
 
     # Batch-only
     parser.add_argument("--max-concurrent", type=int, default=4,
@@ -171,6 +174,7 @@ def _config_kwargs(args: argparse.Namespace) -> dict:
         pool_enabled=args.pool_enabled,
         pool_bootstrap_dir=args.pool_bootstrap_dir,
         pool_port=args.pool_port,
+        pool_max_consecutive_syncs=args.pool_max_consecutive_syncs,
         resume=args.resume,
     )
 
