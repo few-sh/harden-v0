@@ -1,6 +1,7 @@
+TASK_NAME=password-recovery
 cd ~/truthserum/harden-v0 \
-&& uv run python harden.py --tasks-dir ../datasets/tag_hackable_2026_03_30_dataset_tasks \
---task-id simple-web-scraper \
+&& uv run python harden.py --tasks-dir ../datasets/TerminalBench-original-non-hacked \
+--task-id $TASK_NAME \
 -c ../datasets/gemini-terminus2-harden.yaml \
 --solver-model gemini/gemini-3-flash-preview \
 --hacker-model gemini/gemini-3-flash-preview \
@@ -14,5 +15,5 @@ cd ~/truthserum/harden-v0 \
 --solver-timeout-multiplier 10.0 \
 --hacker-timeout-multiplier 10.0 \
 --pool-enabled \
---pool-bootstrap-dir=../datasets/tag_hackable_2026_03_30_dataset_tasks/simple-web-scraper/ \
---output-dir outputs/single-task-simple-web-scraper-gemini-3-flash-1task
+--pool-bootstrap-dir=../datasets/TerminalBench-original-non-hacked/$TASK_NAME/ \
+--output-dir outputs/single-task-$TASK_NAME-gemini-3-flash-1task
