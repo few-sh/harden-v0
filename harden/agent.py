@@ -12,6 +12,7 @@ without rebuild control + distinct image names, cache pollution silently reuses 
 """
 
 import logging
+import subprocess
 from datetime import datetime
 from pathlib import Path
 from uuid import uuid4
@@ -33,6 +34,30 @@ logger = logging.getLogger(__name__)
 # Defaults that match what works well with gemini-3.x thinking models
 DEFAULT_TEMPERATURE = 1.0
 DEFAULT_REASONING_EFFORT = "high"
+
+# hook_scripts/hooks.sh lives at the repo root (parent of the `harden` package).
+_HOOK_SCRIPT = Path(__file__).resolve().parent.parent / "hook_scripts" / "hooks.sh"
+
+
+def _fire_job_finished_hook(job_path: Path) -> None:
+    """Launch hook_scripts/hooks.sh in the background with the absolute job path.
+
+    Fully detached (new session, /dev/null I/O). Failures are logged and
+    swallowed so a broken hook never breaks the harden run.
+    """
+    if not _HOOK_SCRIPT.is_file():
+        return
+    try:
+        subprocess.Popen(
+            [str(_HOOK_SCRIPT), str(job_path.resolve())],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL,
+            start_new_session=True,
+            close_fds=True,
+        )
+    except OSError as e:
+        logger.warning("Failed to launch job-finished hook %s: %s", _HOOK_SCRIPT, e)
 
 
 def _extract_reward(trial_result: TrialResult) -> float:
@@ -254,6 +279,7 @@ async def _run_agent(
     trial_result = TrialResult.model_validate_json(result_path.read_text())
     reward = _extract_reward(trial_result)
     logger.info("[%s] Completed: reward=%.2f, trial_dir=%s", role, reward, trial_dir)
+    _fire_job_finished_hook(trial_dir)
     return reward, trial_dir
 
 
