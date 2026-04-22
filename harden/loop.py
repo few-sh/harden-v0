@@ -277,7 +277,6 @@ async def harden_task(
                     )
                     pool_advanced = False
                     pool_log = ""
-                    iter_info["pool_advanced"] = False
                     iter_info["pool_sync_forced_hack"] = True
                     reuse_hack = None
                 else:
