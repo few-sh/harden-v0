@@ -14,4 +14,4 @@ cd ~/truthserum/harden-v0 \
 --solver-precheck-retries 4 \
 --solver-timeout-multiplier 10.0 \
 --hacker-timeout-multiplier 10.0 \
---output-dir outputs/tb-tag-hackable-2026-03-30-gemini-3-flash
+--output-dir outputs/tb-tag-hackable-2026-03-30-nopool-gemini-3-flash
