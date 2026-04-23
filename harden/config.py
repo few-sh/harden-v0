@@ -90,6 +90,9 @@ class HardenConfig:
     # If True, preserve an existing output/hardened/<task>/ from a prior run.
     resume: bool = False
 
+    # Re-run cached failed prechecks live instead of reusing their result.
+    retry_failed_prechecks: bool = False
+
     @property
     def task_dir(self) -> Path:
         return self.tasks_dir / self.task_id
