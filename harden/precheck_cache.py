@@ -79,6 +79,7 @@ def build_precheck_cache_key(*, task_dir: Path, config: HardenConfig) -> tuple[s
         "timeout_multiplier": config.solver_timeout_multiplier,
         "solver_precheck_retries": config.solver_precheck_retries,
         "solver_privileged": config.solver_privileged,
+        "reasoning_effort": config.reasoning_effort,
     }
     return _sha256_text(json.dumps(key_material, sort_keys=True)), key_material
 
