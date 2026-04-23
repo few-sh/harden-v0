@@ -260,7 +260,15 @@ async def harden_task(
             (pool_cursor.sha or "(fresh)")[:8],
         )
 
-    for iteration in range(config.max_iterations):
+    # Pool-sync iters don't count toward max_iterations — only
+    # iterations where the hacker actually runs consume the budget.
+    hack_iterations = 0
+    # After pool_max_consecutive_syncs skips in a row, force the
+    # hacker regardless of pool state.
+    consecutive_pool_syncs = 0
+    iteration = -1
+    while hack_iterations < config.max_iterations:
+        iteration += 1
         iter_info: dict = {
             "iteration": iteration,
             "hack_reward": None,
@@ -283,12 +291,29 @@ async def harden_task(
             iter_info["pool_sha_start"] = current_pool_sha
             iter_info["pool_advanced"] = pool_advanced
             if pool_advanced:
-                logger.info(
-                    "Pool advanced %s..%s — skipping hacker.",
-                    previous_last_seen[:8], current_pool_sha[:8],
-                )
-                # Pool situation changed; the reused hack may no longer apply.
-                reuse_hack = None
+                if consecutive_pool_syncs >= config.pool_max_consecutive_syncs:
+                    # Option 2: consecutive sync cap hit — force the hacker.
+                    logger.info(
+                        "Pool advanced but %d consecutive sync(s) at limit (K=%d) — forcing hacker.",
+                        consecutive_pool_syncs, config.pool_max_consecutive_syncs,
+                    )
+                    pool_advanced = False
+                    pool_log = ""
+                    iter_info["pool_sync_forced_hack"] = True
+                    reuse_hack = None
+                else:
+                    logger.info(
+                        "Pool advanced %s..%s — skipping hacker.",
+                        previous_last_seen[:8], current_pool_sha[:8],
+                    )
+                    consecutive_pool_syncs += 1
+                    # Pool situation changed; the reused hack may no longer apply.
+                    reuse_hack = None
+
+        # Only count iterations where the hacker runs toward max_iterations.
+        if not pool_advanced:
+            hack_iterations += 1
+            consecutive_pool_syncs = 0
 
         if pool_advanced:
             hack_summary = "(no new hack this iteration — the shared pool has advanced; see the 'Pool advanced' section)"
