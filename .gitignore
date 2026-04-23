@@ -11,3 +11,4 @@ harden_output/
 trajectory_explorer_*.html
 extract_iter1.py
 extract_log.py
+.cache/

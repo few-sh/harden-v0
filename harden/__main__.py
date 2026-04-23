@@ -131,6 +131,9 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-concurrent", type=int, default=4,
                         help="Max concurrent Docker containers (batch mode)")
 
+    parser.add_argument("--retry-failed-prechecks", action="store_true",
+                        help="Re-run cached failed prechecks live instead of reusing their result")
+
     parser.add_argument("--log-level", default="INFO",
                         choices=["DEBUG", "INFO", "WARNING", "ERROR"],
                         help="Logging level (default: INFO)")
@@ -176,6 +179,7 @@ def _config_kwargs(args: argparse.Namespace) -> dict:
         pool_port=args.pool_port,
         pool_max_consecutive_syncs=args.pool_max_consecutive_syncs,
         resume=args.resume,
+        retry_failed_prechecks=args.retry_failed_prechecks,
     )
 
 

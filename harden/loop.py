@@ -27,6 +27,7 @@ from .agent import (
     run_solver_agent,
 )
 from .config import HardenConfig
+from .precheck_cache import build_precheck_cache_key, load_cached_precheck, store_cached_precheck
 from .instructions import (
     HACKER_FEEDBACK_HINT,
     HACKER_PRIVILEGED_HINT,
@@ -197,20 +198,41 @@ async def harden_task(
     precheck_retries = 1 if config.oracle else config.solver_precheck_retries
     precheck_passed = False
     reward = 0.0
-    for attempt in range(precheck_retries):
-        logger.info("Pre-check attempt %d/%d (oracle=%s)", attempt + 1, precheck_retries, config.oracle)
-        reward, _ = await _run_solver(
-            config,
-            solver_parent,
-            role=f"solver_precheck_a{attempt}",
-            force_build=precheck_modified,
-            image_name=harden_image if precheck_modified else None,
-        )
-        if reward >= config.solver_threshold:
-            precheck_passed = True
-            break
-        logger.warning("Pre-check attempt %d failed (reward=%.2f < %.2f).",
-                       attempt + 1, reward, config.solver_threshold)
+
+    _cache_key: str | None = None
+    _cache_material: dict | None = None
+    _cache_hit = False
+    if not config.oracle:
+        _cache_key, _cache_material = build_precheck_cache_key(task_dir=original_dir, config=config)
+        _cached = load_cached_precheck(_cache_key, retry_failed=config.retry_failed_prechecks)
+        if _cached is not None:
+            reward = _cached.get("reward", 0.0)
+            precheck_passed = reward >= config.solver_threshold
+            _cache_hit = True
+            logger.info("Pre-check cache hit (reward=%.2f, passed=%s).", reward, precheck_passed)
+
+    if not _cache_hit:
+        _precheck_trial: Path | None = None
+        for attempt in range(precheck_retries):
+            logger.info("Pre-check attempt %d/%d (oracle=%s)", attempt + 1, precheck_retries, config.oracle)
+            reward, _precheck_trial = await _run_solver(
+                config,
+                solver_parent,
+                role=f"solver_precheck_a{attempt}",
+                force_build=precheck_modified,
+                image_name=harden_image if precheck_modified else None,
+            )
+            if reward >= config.solver_threshold:
+                precheck_passed = True
+                break
+            logger.warning("Pre-check attempt %d failed (reward=%.2f < %.2f).",
+                           attempt + 1, reward, config.solver_threshold)
+        if _cache_key is not None and _cache_material is not None and _precheck_trial is not None:
+            store_cached_precheck(
+                _cache_key,
+                {"reward": reward, "passed": precheck_passed, "trial_dir": str(_precheck_trial)},
+                key_material=_cache_material,
+            )
 
     if not precheck_passed:
         logger.warning("Solver failed all pre-check attempts. Task may be unsolvable/broken.")
