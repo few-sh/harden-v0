@@ -24,7 +24,7 @@ from pathlib import Path
 
 from .config import BatchHardenConfig, HardenConfig
 from .loop import _harden_task_phases
-from .pool import PoolServer, pool_context
+from .pool import PoolServer, get_pool_head, pool_context, write_last_seen_sha
 
 logger = logging.getLogger(__name__)
 
@@ -108,6 +108,18 @@ async def harden_batch(config: BatchHardenConfig) -> list[dict]:
             logger.warning("[%s] Could not reload existing result; omitted from summary", task_id)
 
     with pool_context(config) as pool_server:
+        # Seed every fresh task's pool cursor to the bootstrap SHA so iter-0
+        # doesn't waste a fixer turn integrating the raw bootstrap commit.
+        # Tasks with an existing pool_sha.txt (resumed runs) are left alone.
+        if pool_server is not None:
+            bootstrap_sha = get_pool_head(pool_server.bare_path)
+            for task_id in tasks_to_run:
+                task_output_dir = config.output_dir / task_id
+                sha_file = task_output_dir / "pool_sha.txt"
+                if not sha_file.exists():
+                    task_output_dir.mkdir(parents=True, exist_ok=True)
+                    write_last_seen_sha(task_output_dir, bootstrap_sha)
+
         # Each task gets:
         #   - a generator object (not yet started — no code runs until __anext__)
         #   - a single-element list that the generator writes its result dict into
