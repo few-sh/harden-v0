@@ -13,10 +13,21 @@ Two orthogonal mode flags:
 The threshold values (`cfg.hack_threshold`, `cfg.solver_threshold`) are
 compared against whatever the verifier returns; the *name* of that metric
 (speedup vs reward) follows `cfg.kernelbench_mode`, not `cfg.oracle`.
+
+Concurrency model (batch mode):
+  `_harden_task_phases` is an async generator that yields at each agent-phase
+  boundary (precheck / hack / fix / validate+replay).  The batch driver
+  advances all active task generators one phase at a time via asyncio.gather,
+  so all prechecks finish before any hack starts, all hacks before any fixer,
+  etc.  The semaphore (passed in by the batch) limits concurrent container
+  runs across all tasks and all phases.
 """
 
+import asyncio
 import json
 import logging
+import random
+from collections.abc import AsyncGenerator
 from pathlib import Path
 
 from .agent import (
@@ -148,20 +159,42 @@ def _validate_task_dir(task_dir: Path) -> None:
         )
 
 
-async def harden_task(
-    config: HardenConfig,
-    pool_server: PoolServer | None = None,
-) -> dict:
-    """Run the full adversarial hardening loop for a single task.
+def _save_result(path: Path, result: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(result, indent=2, default=str))
 
-    When `config.pool_enabled` AND `pool_server` is provided, the loop runs in
-    pooled (jumper) mode: fixer containers clone/push a shared defense repo,
-    and iterations where the pool has advanced since this task's last iteration
-    skip the hacker step (treating it as a sync iteration).
+
+async def _harden_task_phases(
+    config: HardenConfig,
+    pool_server: PoolServer | None,
+    semaphore: asyncio.Semaphore,
+    result_out: list,
+) -> AsyncGenerator[None, None]:
+    """Async generator that runs the hardening loop for one task.
+
+    Yields at each agent-phase boundary so that a batch driver can advance
+    all tasks one phase at a time:
+
+        yield 1 — after precheck
+        yield 2 — after hack  (per iteration)
+        yield 3 — after fixer (per iteration)
+        yield 4 — after validate+replay (per iteration)
+
+    Tasks that skip a phase (pool-sync, cache hit, no replay) reach the yield
+    without doing container work — they count as "finished" for that phase.
+    Tasks that terminate early (robust, legitimate threshold, precheck failure)
+    return before the next yield; the batch sees StopAsyncIteration and marks
+    them done.
+
+    `semaphore` limits concurrent container runs across all tasks/phases.
+    Results are written into `result_out` (list) as a single dict.
     """
+    # Stagger to avoid thundering-herd on batch launch.
+    await asyncio.sleep(random.uniform(0, 10))
+
     if config.pool_enabled and pool_server is None:
         raise ValueError(
-            "config.pool_enabled=True but pool_server was not passed to harden_task. "
+            "config.pool_enabled=True but pool_server was not passed. "
             "Use pool_context() or pass pool_server explicitly."
         )
     pooled = config.pool_enabled and pool_server is not None
@@ -194,6 +227,7 @@ async def harden_task(
             append_to_instruction(solver_parent, config.task_id, SOLVER_HINT)
             precheck_modified = True
 
+    # ── PRECHECK PHASE ────────────────────────────────────────────────────────
     # Pre-check: solver must pass the original task. Retries only meaningful for agent solver.
     precheck_retries = 1 if config.oracle else config.solver_precheck_retries
     precheck_passed = False
@@ -213,20 +247,21 @@ async def harden_task(
 
     if not _cache_hit:
         _precheck_trial: Path | None = None
-        for attempt in range(precheck_retries):
-            logger.info("Pre-check attempt %d/%d (oracle=%s)", attempt + 1, precheck_retries, config.oracle)
-            reward, _precheck_trial = await _run_solver(
-                config,
-                solver_parent,
-                role=f"solver_precheck_a{attempt}",
-                force_build=precheck_modified,
-                image_name=harden_image if precheck_modified else None,
-            )
-            if reward >= config.solver_threshold:
-                precheck_passed = True
-                break
-            logger.warning("Pre-check attempt %d failed (reward=%.2f < %.2f).",
-                           attempt + 1, reward, config.solver_threshold)
+        async with semaphore:
+            for attempt in range(precheck_retries):
+                logger.info("Pre-check attempt %d/%d (oracle=%s)", attempt + 1, precheck_retries, config.oracle)
+                reward, _precheck_trial = await _run_solver(
+                    config,
+                    solver_parent,
+                    role=f"solver_precheck_a{attempt}",
+                    force_build=precheck_modified,
+                    image_name=harden_image if precheck_modified else None,
+                )
+                if reward >= config.solver_threshold:
+                    precheck_passed = True
+                    break
+                logger.warning("Pre-check attempt %d failed (reward=%.2f < %.2f).",
+                               attempt + 1, reward, config.solver_threshold)
         if _cache_key is not None and _cache_material is not None and _precheck_trial is not None:
             store_cached_precheck(
                 _cache_key,
@@ -238,10 +273,14 @@ async def harden_task(
         logger.warning("Solver failed all pre-check attempts. Task may be unsolvable/broken.")
         result["status"] = "solver_failed_precheck"
         _save_result(config.result_path, result)
-        return result
+        result_out.append(result)
+        return  # done — exits before first yield
 
     logger.info("Pre-check passed (reward=%.2f). Starting hardening loop.", reward)
 
+    yield  # ── phase boundary: precheck done ──────────────────────────────────
+
+    # ── Cross-iteration state ─────────────────────────────────────────────────
     reuse_hack: tuple[str, float] | None = None
     previous_failure: str | None = None
     previous_fixer_trial: Path | None = None
@@ -267,6 +306,7 @@ async def harden_task(
     # hacker regardless of pool state.
     consecutive_pool_syncs = 0
     iteration = -1
+
     while hack_iterations < config.max_iterations:
         iteration += 1
         iter_info: dict = {
@@ -315,6 +355,7 @@ async def harden_task(
             hack_iterations += 1
             consecutive_pool_syncs = 0
 
+        # ── HACK PHASE ────────────────────────────────────────────────────────
         if pool_advanced:
             hack_summary = "(no new hack this iteration — the shared pool has advanced; see the 'Pool advanced' section)"
             hack_reward = 0.0
@@ -326,48 +367,49 @@ async def harden_task(
             hack_succeeded = False
             attempt_failed_trials: list[Path] = []
             hack_reward = 0.0
-            for attempt in range(config.hacker_retries):
-                hacker_parent = create_working_copy(hardened_task_dir, output / "hacker_task")
-                original_instruction = (original_dir / "instruction.md").read_text()
-                hacker_instruction = build_hacker_instruction(
-                    original_instruction, kernelbench_mode=config.kernelbench_mode
-                )
-                replace_instruction(hacker_parent, config.task_id, hacker_instruction)
+            async with semaphore:
+                for attempt in range(config.hacker_retries):
+                    hacker_parent = create_working_copy(hardened_task_dir, output / "hacker_task")
+                    original_instruction = (original_dir / "instruction.md").read_text()
+                    hacker_instruction = build_hacker_instruction(
+                        original_instruction, kernelbench_mode=config.kernelbench_mode
+                    )
+                    replace_instruction(hacker_parent, config.task_id, hacker_instruction)
 
-                hacker_privileged_modified = False
-                if config.hacker_privileged:
-                    if prepare_privileged_hacker_environment(hacker_parent, config.task_id):
-                        append_to_instruction(hacker_parent, config.task_id, HACKER_PRIVILEGED_HINT)
-                        hacker_privileged_modified = True
+                    hacker_privileged_modified = False
+                    if config.hacker_privileged:
+                        if prepare_privileged_hacker_environment(hacker_parent, config.task_id):
+                            append_to_instruction(hacker_parent, config.task_id, HACKER_PRIVILEGED_HINT)
+                            hacker_privileged_modified = True
 
-                all_failed = failed_hack_trials + attempt_failed_trials
-                hacker_feedback_modified = (config.hacker_feedback and bool(all_failed))
-                if hacker_feedback_modified:
-                    prepare_hacker_environment(hacker_parent, config.task_id, all_failed)
-                    append_to_instruction(hacker_parent, config.task_id, HACKER_FEEDBACK_HINT)
+                    all_failed = failed_hack_trials + attempt_failed_trials
+                    hacker_feedback_modified = (config.hacker_feedback and bool(all_failed))
+                    if hacker_feedback_modified:
+                        prepare_hacker_environment(hacker_parent, config.task_id, all_failed)
+                        append_to_instruction(hacker_parent, config.task_id, HACKER_FEEDBACK_HINT)
 
-                hacker_dockerfile_modified = hacker_privileged_modified or hacker_feedback_modified
-                hacker_needs_rebuild = hacker_dockerfile_modified or hardened_dirty
-                hack_reward, hacker_trial = await run_hacker(
-                    hacker_parent,
-                    config.hacker_model,
-                    config.jobs_dir,
-                    role=f"hacker_iter{iteration}_a{attempt}",
-                    max_turns=config.hacker_max_turns,
-                    temperature=config.temperature,
-                    max_tokens=config.max_tokens,
-                    reasoning_effort=config.reasoning_effort,
-                    timeout_multiplier=config.hacker_timeout_multiplier,
-                    harbor_config=config.harbor_config,
-                    force_build=hacker_needs_rebuild or config.force_build,
-                    image_name=harden_image if hacker_needs_rebuild else config.image_name,
-                )
-                if hack_reward >= config.hack_threshold:
-                    hack_succeeded = True
-                    break
-                logger.info("Hacker attempt %d/%d: reward=%.2f (threshold=%.2f).",
-                            attempt + 1, config.hacker_retries, hack_reward, config.hack_threshold)
-                attempt_failed_trials.append(hacker_trial)
+                    hacker_dockerfile_modified = hacker_privileged_modified or hacker_feedback_modified
+                    hacker_needs_rebuild = hacker_dockerfile_modified or hardened_dirty
+                    hack_reward, hacker_trial = await run_hacker(
+                        hacker_parent,
+                        config.hacker_model,
+                        config.jobs_dir,
+                        role=f"hacker_iter{iteration}_a{attempt}",
+                        max_turns=config.hacker_max_turns,
+                        temperature=config.temperature,
+                        max_tokens=config.max_tokens,
+                        reasoning_effort=config.reasoning_effort,
+                        timeout_multiplier=config.hacker_timeout_multiplier,
+                        harbor_config=config.harbor_config,
+                        force_build=hacker_needs_rebuild or config.force_build,
+                        image_name=harden_image if hacker_needs_rebuild else config.image_name,
+                    )
+                    if hack_reward >= config.hack_threshold:
+                        hack_succeeded = True
+                        break
+                    logger.info("Hacker attempt %d/%d: reward=%.2f (threshold=%.2f).",
+                                attempt + 1, config.hacker_retries, hack_reward, config.hack_threshold)
+                    attempt_failed_trials.append(hacker_trial)
 
             if not hack_succeeded:
                 logger.info("Hacker failed all %d attempts. Task is robust!", config.hacker_retries)
@@ -375,7 +417,10 @@ async def harden_task(
                 iter_info["outcome"] = "hacker_failed"
                 result["iterations"].append(iter_info)
                 result["status"] = "robust"
-                break
+                result["hardened_dir"] = str(hardened_task_dir)
+                _save_result(config.result_path, result)
+                result_out.append(result)
+                return  # done — exits before hack yield
 
             failed_hack_trials = []
             logger.info("Hacker succeeded (reward=%.2f >= %.2f). Extracting trajectory.",
@@ -385,6 +430,9 @@ async def harden_task(
         iter_info["hack_reward"] = hack_reward if not pool_advanced else None
         original_instruction = (original_dir / "instruction.md").read_text()
 
+        yield  # ── phase boundary: hack done ──────────────────────────────────
+
+        # ── FIX PHASE ─────────────────────────────────────────────────────────
         fixer_instruction = build_fixer_instruction(
             original_instruction, hack_summary, previous_failure,
             has_previous_attempt=previous_fixer_trial is not None,
@@ -406,22 +454,29 @@ async def harden_task(
         )
 
         # Fixer always modifies the Dockerfile → force_build with harden image.
-        _, fixer_trial = await run_fixer(
-            fixer_parent,
-            config.fixer_model,
-            config.jobs_dir,
-            role=f"fixer_iter{iteration}",
-            max_turns=config.fixer_max_turns,
-            temperature=config.temperature,
-            max_tokens=config.max_tokens,
-            reasoning_effort=config.reasoning_effort,
-            timeout_multiplier=config.fixer_timeout_multiplier,
-            harbor_config=config.harbor_config,
-            force_build=True,
-            image_name=harden_image,
-        )
+        async with semaphore:
+            _, fixer_trial = await run_fixer(
+                fixer_parent,
+                config.fixer_model,
+                config.jobs_dir,
+                role=f"fixer_iter{iteration}",
+                max_turns=config.fixer_max_turns,
+                temperature=config.temperature,
+                max_tokens=config.max_tokens,
+                reasoning_effort=config.reasoning_effort,
+                timeout_multiplier=config.fixer_timeout_multiplier,
+                harbor_config=config.harbor_config,
+                force_build=True,
+                image_name=harden_image,
+            )
 
+        yield  # ── phase boundary: fix done ────────────────────────────────────
+
+        # ── VALIDATE + REPLAY PHASE ───────────────────────────────────────────
         fix_applied = False
+        # True when iter_info is appended inside this block (pool-sync / legitimate
+        # early-exit paths); prevents a double-append at the end of the iteration.
+        _iter_appended = False
         try:
             solver_parent = create_working_copy(hardened_task_dir, output / "solver_validate")
             fix_result = extract_fixer_artifacts(
@@ -454,9 +509,10 @@ async def harden_task(
                 if pool_cursor is not None:
                     pool_cursor.persist()
                 result["iterations"].append(iter_info)
-                continue
+                _iter_appended = True
+                # fall through to validate yield (no container work needed)
 
-            if fix_result == "no_changes":
+            elif fix_result == "no_changes":
                 logger.warning("Fixer did not commit any changes")
                 previous_failure = (
                     "Fixer did not commit any changes. You MUST commit: "
@@ -464,6 +520,8 @@ async def harden_task(
                 )
                 legitimate_streak = 0
                 iter_info["outcome"] = "no_changes"
+                # fall through to validate yield (no container work needed)
+
             elif fix_result == "legitimate":
                 legitimate_streak += 1
                 logger.info("Fixer marked hack as legitimate (%d/%d).",
@@ -477,13 +535,18 @@ async def harden_task(
                                 config.legitimate_threshold)
                     result["iterations"].append(iter_info)
                     result["status"] = "robust"
-                    break
+                    result["hardened_dir"] = str(hardened_task_dir)
+                    _save_result(config.result_path, result)
+                    result_out.append(result)
+                    return  # done — exits before validate yield
                 reuse_hack = None
                 previous_failure = None
                 previous_fixer_trial = None
                 previous_solver_trial = None
                 result["iterations"].append(iter_info)
-                continue
+                _iter_appended = True
+                # fall through to validate yield (no container work needed)
+
             else:  # "applied"
                 validate_modified = False
                 if not config.oracle and config.solver_privileged:
@@ -492,13 +555,14 @@ async def harden_task(
                         validate_modified = True
 
                 solver_needs_rebuild = validate_modified or hardened_dirty
-                solver_reward, solver_trial = await _run_solver(
-                    config,
-                    solver_parent,
-                    role=f"solver_validate_iter{iteration}",
-                    force_build=solver_needs_rebuild,
-                    image_name=harden_image if solver_needs_rebuild else None,
-                )
+                async with semaphore:
+                    solver_reward, solver_trial = await _run_solver(
+                        config,
+                        solver_parent,
+                        role=f"solver_validate_iter{iteration}",
+                        force_build=solver_needs_rebuild,
+                        image_name=harden_image if solver_needs_rebuild else None,
+                    )
 
                 if solver_reward >= config.solver_threshold:
                     logger.info("Fix validated — solver passes (reward=%.2f).", solver_reward)
@@ -509,10 +573,11 @@ async def harden_task(
                     # meaningful to reproduce.
                     if config.replay_enabled and not pool_advanced:
                         iter_info["replay_attempted"] = True
-                        replay_reward = await _run_targeted_replay(
-                            config, hardened_task_dir, fixer_trial, hack_summary,
-                            original_instruction, output, harden_image, iteration,
-                        )
+                        async with semaphore:
+                            replay_reward = await _run_targeted_replay(
+                                config, hardened_task_dir, fixer_trial, hack_summary,
+                                original_instruction, output, harden_image, iteration,
+                            )
                         iter_info["replay_reward"] = replay_reward
 
                     if replay_reward is not None and replay_reward >= config.hack_threshold:
@@ -556,23 +621,40 @@ async def harden_task(
             previous_failure = str(e)
             legitimate_streak = 0
 
-        if not fix_applied and not pool_advanced:
-            # Reuse the hack next iter if the fixer failed, but only when we
-            # actually had a hack. On pool-sync iters hack_summary is a
-            # sentinel string — reusing it would hand the next fixer nonsense.
-            reuse_hack = (hack_summary, hack_reward)
+        yield  # ── phase boundary: validate+replay done ─────────────────────
 
-        iter_info["fix_applied"] = fix_applied
-        iter_info.setdefault("outcome", "fixed" if fix_applied else "fix_failed")
-        result["iterations"].append(iter_info)
-    else:
-        result["status"] = "max_iterations"
+        # End-of-iteration bookkeeping (skipped for pool-sync / legitimate early-exit
+        # paths that already appended iter_info above).
+        if not _iter_appended:
+            if not fix_applied and not pool_advanced:
+                # Reuse the hack next iter if the fixer failed, but only when we
+                # actually had a hack. On pool-sync iters hack_summary is a
+                # sentinel string — reusing it would hand the next fixer nonsense.
+                reuse_hack = (hack_summary, hack_reward)
+            iter_info["fix_applied"] = fix_applied
+            iter_info.setdefault("outcome", "fixed" if fix_applied else "fix_failed")
+            result["iterations"].append(iter_info)
 
+    # while loop exhausted without a terminal break → max_iterations
+    result["status"] = "max_iterations"
     result["hardened_dir"] = str(hardened_task_dir)
     _save_result(config.result_path, result)
-    return result
+    result_out.append(result)
 
 
-def _save_result(path: Path, result: dict) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(result, indent=2, default=str))
+async def harden_task(
+    config: HardenConfig,
+    pool_server: PoolServer | None = None,
+) -> dict:
+    """Run the full adversarial hardening loop for a single task.
+
+    When `config.pool_enabled` AND `pool_server` is provided, the loop runs in
+    pooled (jumper) mode: fixer containers clone/push a shared defense repo,
+    and iterations where the pool has advanced since this task's last iteration
+    skip the hacker step (treating it as a sync iteration).
+    """
+    semaphore = asyncio.Semaphore(1)  # single-task: no concurrency limit needed
+    result_out: list = []
+    async for _ in _harden_task_phases(config, pool_server, semaphore, result_out):
+        pass
+    return result_out[0]
