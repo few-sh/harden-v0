@@ -26,7 +26,6 @@ Concurrency model (batch mode):
 import asyncio
 import json
 import logging
-import random
 from collections.abc import AsyncGenerator
 from pathlib import Path
 
@@ -169,6 +168,7 @@ async def _harden_task_phases(
     pool_server: PoolServer | None,
     semaphore: asyncio.Semaphore,
     result_out: list,
+    initial_delay: float = 0.0,
 ) -> AsyncGenerator[None, None]:
     """Async generator that runs the hardening loop for one task.
 
@@ -189,9 +189,6 @@ async def _harden_task_phases(
     `semaphore` limits concurrent container runs across all tasks/phases.
     Results are written into `result_out` (list) as a single dict.
     """
-    # Stagger to avoid thundering-herd on batch launch.
-    await asyncio.sleep(random.uniform(0, 10))
-
     if config.pool_enabled and pool_server is None:
         raise ValueError(
             "config.pool_enabled=True but pool_server was not passed. "
@@ -247,6 +244,8 @@ async def _harden_task_phases(
 
     if not _cache_hit:
         _precheck_trial: Path | None = None
+        if initial_delay:
+            await asyncio.sleep(initial_delay)
         async with semaphore:
             for attempt in range(precheck_retries):
                 logger.info("Pre-check attempt %d/%d (oracle=%s)", attempt + 1, precheck_retries, config.oracle)

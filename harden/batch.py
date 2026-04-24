@@ -14,6 +14,7 @@ StopAsyncIteration and the task is collected as done.
 """
 
 import asyncio
+from collections.abc import AsyncGenerator
 import dataclasses
 import json
 import logging
@@ -112,20 +113,23 @@ async def harden_batch(config: BatchHardenConfig) -> list[dict]:
         #   - a single-element list that the generator writes its result dict into
         #     when it terminates (avoids needing a return value from an async generator)
         #   - a start timestamp for elapsed-time logging
-        task_gens: dict[str, object] = {}
+        task_gens: dict[str, AsyncGenerator] = {}
         task_result_out: dict[str, list] = {}
         task_start: dict[str, float] = {}
-        for task_id in tasks_to_run:
+        for i, task_id in enumerate(tasks_to_run):
             task_config = config.make_task_config(task_id)
             _save_task_config(task_config)
             ro: list = []
             task_result_out[task_id] = ro
-            task_gens[task_id] = _harden_task_phases(task_config, pool_server, semaphore, ro)
+            task_gens[task_id] = _harden_task_phases(
+                task_config, pool_server, semaphore, ro,
+                initial_delay=2,  # 2 seconds apart — spreads initial container burst
+            )
             task_start[task_id] = time.monotonic()
 
         n_done = 0
 
-        async def _advance(tid: str, gen) -> tuple[str, bool]:
+        async def _advance(tid: str, gen: AsyncGenerator) -> tuple[str, bool]:
             """Advance one generator by one phase. Returns (tid, still_active).
 
             Calls __anext__() which runs the generator body until its next yield
@@ -137,7 +141,7 @@ async def harden_batch(config: BatchHardenConfig) -> list[dict]:
             the entire gather round.
             """
             try:
-                await gen.__anext__()
+                await anext(gen)
                 return tid, True
             except StopAsyncIteration:
                 # Generator ran off the end or hit an explicit return — task done.
