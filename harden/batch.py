@@ -195,23 +195,35 @@ async def harden_batch(config: BatchHardenConfig) -> list[dict]:
             # Replace the active-task dict atomically after the full gather so
             # that task_gens always reflects a consistent phase boundary state.
             task_gens = next_task_gens
-            _print_summary(results, config, total=total, finished=False)
+            _print_summary(results, config, total=total, finished=False,
+                           running_task_ids=list(task_gens))
 
-    _print_summary(results, config, total=total, finished=True)
+    _print_summary(results, config, total=total, finished=True, running_task_ids=[])
     return results
 
 
-def _print_summary(results: list[dict], config: BatchHardenConfig, *, total: int, finished: bool = False) -> None:
+def _print_summary(
+    results: list[dict],
+    config: BatchHardenConfig,
+    *,
+    total: int,
+    finished: bool = False,
+    running_task_ids: list[str] | None = None,
+) -> None:
     counts = Counter(r.get("status", "unknown") for r in results)
     n_finished = len(results)
+    running_task_ids = running_task_ids or []
+    n_running = len(running_task_ids)
 
     print(f"\n{'='*60}")
     print("Batch Hardening Summary")
     print(f"{'='*60}")
-    print(f"Total tasks: {total}  |  Finished: {n_finished}")
+    print(f"Total: {total}  |  Finished: {n_finished}  |  Running: {n_running}")
     for status in ["robust", "max_iterations", "solver_failed_precheck", "error", "unknown"]:
         if counts[status]:
             print(f"  {status:.<30} {counts[status]}")
+    if running_task_ids:
+        print(f"  {'running':.<30} {', '.join(running_task_ids)}")
     print(f"{'='*60}")
 
     summary_path = config.output_dir / "batch_summary.json"
@@ -220,6 +232,8 @@ def _print_summary(results: list[dict], config: BatchHardenConfig, *, total: int
         "harden_run_finished": finished,
         "total": total,
         "finished": n_finished,
+        "running_tasks_count": n_running,
+        "running_tasks": running_task_ids,
         "counts": dict(counts),
         "tasks": [
             {"task_id": r.get("task_id"), "status": r.get("status")}
