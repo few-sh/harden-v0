@@ -509,6 +509,7 @@ async def _harden_task_phases(
                 if pool_cursor is not None:
                     pool_cursor.persist()
                 result["iterations"].append(iter_info)
+                _save_result(config.result_path, result)
                 _iter_appended = True
                 # fall through to validate yield (no container work needed)
 
@@ -544,6 +545,7 @@ async def _harden_task_phases(
                 previous_fixer_trial = None
                 previous_solver_trial = None
                 result["iterations"].append(iter_info)
+                _save_result(config.result_path, result)
                 _iter_appended = True
                 # fall through to validate yield (no container work needed)
 
@@ -634,6 +636,7 @@ async def _harden_task_phases(
             iter_info["fix_applied"] = fix_applied
             iter_info.setdefault("outcome", "fixed" if fix_applied else "fix_failed")
             result["iterations"].append(iter_info)
+            _save_result(config.result_path, result)
 
     # while loop exhausted without a terminal break → max_iterations
     result["status"] = "max_iterations"
