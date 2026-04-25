@@ -14,17 +14,17 @@ StopAsyncIteration and the task is collected as done.
 """
 
 import asyncio
-from collections.abc import AsyncGenerator
 import dataclasses
 import json
 import logging
 import time
 from collections import Counter
+from collections.abc import AsyncGenerator
 from pathlib import Path
 
 from .config import BatchHardenConfig, HardenConfig
 from .loop import _harden_task_phases
-from .pool import PoolServer, get_pool_head, pool_context, write_last_seen_sha
+from .pool import get_pool_head, pool_context, write_last_seen_sha
 
 logger = logging.getLogger(__name__)
 
@@ -167,10 +167,9 @@ async def harden_batch(config: BatchHardenConfig) -> list[dict]:
                 return tid, False
 
         # ── Phase-barrier loop ────────────────────────────────────────────────
-        # Each iteration of this while loop is one phase boundary.
+        # Each gather call is one phase boundary: all tasks must reach their
+        # next yield (or finish) before any task begins the next phase.
         #
-        # asyncio.gather launches _advance for every active task concurrently.
-        # Inside _advance, the generator runs until its next yield.  Container-
         # heavy work inside the generator acquires `semaphore` first, so at most
         # max_concurrent_containers tasks run containers at any one time — but
         # the gather itself waits for ALL tasks to reach the yield (or finish)
@@ -183,36 +182,39 @@ async def harden_batch(config: BatchHardenConfig) -> list[dict]:
         # Iteration 3               →  fix phase         (yield 3, iteration 0)
         # Iteration 4               →  validate phase    (yield 4, iteration 0)
         # Iteration 5               →  hack phase        (yield 2, iteration 1)
-        # …and so on until task_gens is empty.
-        while task_gens:
-            phase_outcomes = await asyncio.gather(
-                *[_advance(tid, gen) for tid, gen in task_gens.items()]
-            )
+        try:
+            while task_gens:
+                phase_outcomes = await asyncio.gather(
+                    *[_advance(tid, gen) for tid, gen in task_gens.items()]
+                )
 
-            # Partition results: keep active tasks for the next phase, collect
-            # finished ones into `results`.
-            next_task_gens: dict[str, object] = {}
-            for tid, still_active in phase_outcomes:
-                if still_active:
-                    next_task_gens[tid] = task_gens[tid]
-                else:
-                    n_done += 1
-                    elapsed = time.monotonic() - task_start[tid]
-                    ro = task_result_out[tid]
-                    result = ro[0] if ro else {"task_id": tid, "status": "error"}
-                    results.append(result)
-                    status = result.get("status", "unknown")
-                    n_iters = len(result.get("iterations", []))
-                    logger.info(
-                        "[%d/%d] %s: %s (%d iters, %.0fs)",
-                        n_done, n_to_run, tid, status, n_iters, elapsed,
-                    )
+                next_task_gens: dict[str, AsyncGenerator] = {}
+                for tid, still_active in phase_outcomes:
+                    if still_active:
+                        next_task_gens[tid] = task_gens[tid]
+                    else:
+                        n_done += 1
+                        elapsed = time.monotonic() - task_start[tid]
+                        ro = task_result_out[tid]
+                        result = ro[0] if ro else {"task_id": tid, "status": "error"}
+                        results.append(result)
+                        status = result.get("status", "unknown")
+                        n_iters = len(result.get("iterations", []))
+                        logger.info(
+                            "[%d/%d] %s: %s (%d iters, %.0fs)",
+                            n_done, n_to_run, tid, status, n_iters, elapsed,
+                        )
 
-            # Replace the active-task dict atomically after the full gather so
-            # that task_gens always reflects a consistent phase boundary state.
-            task_gens = next_task_gens
-            _print_summary(results, config, total=total, finished=False,
-                           running_task_ids=list(task_gens))
+                task_gens = next_task_gens
+                _print_summary(results, config, total=total, finished=False,
+                               running_task_ids=list(task_gens))
+        finally:
+            # Cleanup: This ensures that we wait for any tasks that got cancelled with Ctrl-C.
+            if task_gens:
+                await asyncio.gather(
+                    *[gen.aclose() for gen in task_gens.values()],
+                    return_exceptions=True,
+                )
 
     _print_summary(results, config, total=total, finished=True, running_task_ids=[])
     return results
