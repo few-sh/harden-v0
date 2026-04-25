@@ -135,7 +135,7 @@ async def harden_batch(config: BatchHardenConfig) -> list[dict]:
             task_result_out[task_id] = ro
             task_gens[task_id] = _harden_task_phases(
                 task_config, pool_server, semaphore, ro,
-                initial_delay=2,  # 2 seconds apart — spreads initial container burst
+                initial_delay=i * 2.0,  # stagger: task i waits i*2 s before precheck
             )
             task_start[task_id] = time.monotonic()
 
