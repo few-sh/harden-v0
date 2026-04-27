@@ -1,23 +1,30 @@
 """Batch orchestrator for hardening multiple tasks concurrently.
 
-Concurrency model: one `asyncio.Semaphore(max_concurrent_containers)` acquired at
-task level. The task's inner loop (hacker → fixer → validate) is sequential, so
-there's no benefit to threading the semaphore deeper. Each task also staggers
-0–10s before acquiring to avoid thundering-herd container starts.
+Concurrency model: all active tasks advance one agent-phase at a time via
+asyncio.gather, so all prechecks finish before any hack starts, all hacks
+before any fixer, etc.  An asyncio.Semaphore(max_concurrent_containers)
+limits concurrent container runs across tasks and phases; it is acquired
+inside _harden_task_phases for each container-heavy step.
+
+Tasks that skip a phase (pool-sync, cache hit, no replay) reach the phase
+yield without doing container work and count as finished for that phase.
+Tasks that terminate early (robust, legitimate threshold, precheck failure)
+return from the generator before the next yield; the gather sees
+StopAsyncIteration and the task is collected as done.
 """
 
 import asyncio
 import dataclasses
 import json
 import logging
-import random
 import time
 from collections import Counter
+from collections.abc import AsyncGenerator
 from pathlib import Path
 
 from .config import BatchHardenConfig, HardenConfig
-from .loop import harden_task
-from .pool import PoolServer, pool_context
+from .loop import _harden_task_phases
+from .pool import get_pool_head, pool_context, write_last_seen_sha
 
 logger = logging.getLogger(__name__)
 
@@ -90,35 +97,6 @@ async def harden_batch(config: BatchHardenConfig) -> list[dict]:
         total, n_to_run, config.max_concurrent_containers, config.oracle, config.kernelbench_mode,
     )
 
-    progress = {"done": 0, "total": n_to_run}
-    progress_lock = asyncio.Lock()
-
-    async def _run_one(task_id: str, pool_server: PoolServer | None) -> dict:
-        # Stagger container starts to avoid thundering herd on batch launch.
-        await asyncio.sleep(random.uniform(0, 10))
-        async with semaphore:
-            t0 = time.monotonic()
-            try:
-                task_config = config.make_task_config(task_id)
-                _save_task_config(task_config)
-                result = await harden_task(task_config, pool_server=pool_server)
-            except Exception as e:
-                logger.error("[%s] Failed with exception: %s", task_id, e)
-                result = {"task_id": task_id, "status": "error", "error": str(e)}
-
-            elapsed = time.monotonic() - t0
-            async with progress_lock:
-                progress["done"] += 1
-                n = progress["done"]
-
-            status = result.get("status", "unknown")
-            n_iters = len(result.get("iterations", []))
-            logger.info(
-                "[%d/%d] %s: %s (%d iters, %.0fs)",
-                n, n_to_run, task_id, status, n_iters, elapsed,
-            )
-            return result
-
     # Pre-populate results with previously completed tasks so the summary
     # reflects the full batch, not just the current run.
     results: list[dict] = []
@@ -130,29 +108,140 @@ async def harden_batch(config: BatchHardenConfig) -> list[dict]:
             logger.warning("[%s] Could not reload existing result; omitted from summary", task_id)
 
     with pool_context(config) as pool_server:
-        # Process results as they arrive so batch_summary.json is updated continuously;
-        # the unconditional call after the loop handles finished=True and the empty
-        # tasks_to_run edge case (all tasks already done on resume).
-        coros = list(asyncio.as_completed([_run_one(task_id, pool_server) for task_id in tasks_to_run]))
-        for coro in coros:
-            result = await coro
-            results.append(result)
-            _print_summary(results, config, total=total, finished=False)
-    _print_summary(results, config, total=total, finished=True)
+        # Seed every fresh task's pool cursor to the bootstrap SHA so iter-0
+        # doesn't waste a fixer turn integrating the raw bootstrap commit.
+        # Tasks with an existing pool_sha.txt (resumed runs) are left alone.
+        if pool_server is not None:
+            bootstrap_sha = get_pool_head(pool_server.bare_path)
+            for task_id in tasks_to_run:
+                task_output_dir = config.output_dir / task_id
+                sha_file = task_output_dir / "pool_sha.txt"
+                if not sha_file.exists():
+                    task_output_dir.mkdir(parents=True, exist_ok=True)
+                    write_last_seen_sha(task_output_dir, bootstrap_sha)
+
+        # Each task gets:
+        #   - a generator object (not yet started — no code runs until __anext__)
+        #   - a single-element list that the generator writes its result dict into
+        #     when it terminates (avoids needing a return value from an async generator)
+        #   - a start timestamp for elapsed-time logging
+        task_gens: dict[str, AsyncGenerator] = {}
+        task_result_out: dict[str, list] = {}
+        task_start: dict[str, float] = {}
+        for i, task_id in enumerate(tasks_to_run):
+            task_config = config.make_task_config(task_id)
+            _save_task_config(task_config)
+            ro: list = []
+            task_result_out[task_id] = ro
+            task_gens[task_id] = _harden_task_phases(
+                task_config, pool_server, semaphore, ro,
+                initial_delay=i * 2.0,  # stagger: task i waits i*2 s before precheck
+            )
+            task_start[task_id] = time.monotonic()
+
+        n_done = 0
+
+        async def _advance(tid: str, gen: AsyncGenerator) -> tuple[str, bool]:
+            """Advance one generator by one phase. Returns (tid, still_active).
+
+            Calls __anext__() which runs the generator body until its next yield
+            statement, then suspends.  Two outcomes:
+              - yielded → task is still active, returns True
+              - StopAsyncIteration → generator returned (task finished or failed
+                early); result has already been written into task_result_out[tid]
+            Unexpected exceptions are caught so one failing task doesn't abort
+            the entire gather round.
+            """
+            try:
+                await anext(gen)
+                return tid, True
+            except StopAsyncIteration:
+                # Generator ran off the end or hit an explicit return — task done.
+                return tid, False
+            except Exception as e:
+                logger.error("[%s] Phase failed with exception: %s", tid, e)
+                ro = task_result_out[tid]
+                if not ro:
+                    # Generator died before writing a result; synthesise an error entry.
+                    ro.append({"task_id": tid, "status": "error", "error": str(e)})
+                return tid, False
+
+        # ── Phase-barrier loop ────────────────────────────────────────────────
+        # Each gather call is one phase boundary: all tasks must reach their
+        # next yield (or finish) before any task begins the next phase.
+        #
+        # heavy work inside the generator acquires `semaphore` first, so at most
+        # max_concurrent_containers tasks run containers at any one time — but
+        # the gather itself waits for ALL tasks to reach the yield (or finish)
+        # before this loop body continues.  That wait is the phase barrier:
+        # no task can begin the next phase until every task has completed the
+        # current one.
+        #
+        # Iteration 1 of this loop  →  precheck phase   (yield 1 in loop.py)
+        # Iteration 2               →  hack phase        (yield 2, iteration 0)
+        # Iteration 3               →  fix phase         (yield 3, iteration 0)
+        # Iteration 4               →  validate phase    (yield 4, iteration 0)
+        # Iteration 5               →  hack phase        (yield 2, iteration 1)
+        try:
+            while task_gens:
+                phase_outcomes = await asyncio.gather(
+                    *[_advance(tid, gen) for tid, gen in task_gens.items()]
+                )
+
+                next_task_gens: dict[str, AsyncGenerator] = {}
+                for tid, still_active in phase_outcomes:
+                    if still_active:
+                        next_task_gens[tid] = task_gens[tid]
+                    else:
+                        n_done += 1
+                        elapsed = time.monotonic() - task_start[tid]
+                        ro = task_result_out[tid]
+                        result = ro[0] if ro else {"task_id": tid, "status": "error"}
+                        results.append(result)
+                        status = result.get("status", "unknown")
+                        n_iters = len(result.get("iterations", []))
+                        logger.info(
+                            "[%d/%d] %s: %s (%d iters, %.0fs)",
+                            n_done, n_to_run, tid, status, n_iters, elapsed,
+                        )
+
+                task_gens = next_task_gens
+                _print_summary(results, config, total=total, finished=False,
+                               running_task_ids=list(task_gens))
+        finally:
+            # Cleanup: This ensures that we wait for any tasks that got cancelled with Ctrl-C.
+            if task_gens:
+                await asyncio.gather(
+                    *[gen.aclose() for gen in task_gens.values()],
+                    return_exceptions=True,
+                )
+
+    _print_summary(results, config, total=total, finished=True, running_task_ids=[])
     return results
 
 
-def _print_summary(results: list[dict], config: BatchHardenConfig, *, total: int, finished: bool = False) -> None:
+def _print_summary(
+    results: list[dict],
+    config: BatchHardenConfig,
+    *,
+    total: int,
+    finished: bool = False,
+    running_task_ids: list[str] | None = None,
+) -> None:
     counts = Counter(r.get("status", "unknown") for r in results)
     n_finished = len(results)
+    running_task_ids = running_task_ids or []
+    n_running = len(running_task_ids)
 
     print(f"\n{'='*60}")
     print("Batch Hardening Summary")
     print(f"{'='*60}")
-    print(f"Total tasks: {total}  |  Finished: {n_finished}")
+    print(f"Total: {total}  |  Finished: {n_finished}  |  Running: {n_running}")
     for status in ["robust", "max_iterations", "solver_failed_precheck", "error", "unknown"]:
         if counts[status]:
             print(f"  {status:.<30} {counts[status]}")
+    if running_task_ids:
+        print(f"  {'running':.<30} {', '.join(running_task_ids)}")
     print(f"{'='*60}")
 
     summary_path = config.output_dir / "batch_summary.json"
@@ -161,6 +250,8 @@ def _print_summary(results: list[dict], config: BatchHardenConfig, *, total: int
         "harden_run_finished": finished,
         "total": total,
         "finished": n_finished,
+        "running_tasks_count": n_running,
+        "running_tasks": running_task_ids,
         "counts": dict(counts),
         "tasks": [
             {"task_id": r.get("task_id"), "status": r.get("status")}
