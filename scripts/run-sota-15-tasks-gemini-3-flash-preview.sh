@@ -1,3 +1,4 @@
+BOOTSTRAP_TASK=5
 cd ~/truthserum/harden-v0 \
 && uv run python harden.py --tasks-dir ../datasets/tag_hackable_2026_03_30_dataset_tasks \
 --task-ids 1152,438,361,749,1235,230,630,22,265,930,66,494,1225,1219,883 \
@@ -13,5 +14,6 @@ cd ~/truthserum/harden-v0 \
 --solver-precheck-retries 4 \
 --solver-timeout-multiplier 10.0 \
 --hacker-timeout-multiplier 10.0 \
---oracle \
---output-dir outputs/single-task-361-gemini-3-flash-15tasks
+--pool-enabled \
+--pool-bootstrap-dir=../datasets/tag_hackable_2026_03_30_dataset_tasks/$BOOTSTRAP_TASK/ \
+--output-dir outputs/sota-15task-361-gemini-3-flash-lockstep
