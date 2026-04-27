@@ -1,20 +1,53 @@
 #!/bin/bash
 # Launch parallel Claude Code agents to investigate each KernelBench hardening task.
-# Usage: ./investigate.sh [--model sonnet|opus] [batch_dir] [max_parallel]
+# Usage: ./investigate.sh [--model sonnet|opus] [--tasks task1,task2,...] [--tasks-dir /path/to/tasks] [batch_dir] [max_parallel]
 #   batch_dir defaults to latest in outputs/
 #   max_parallel defaults to 8
 #   model defaults to opus
+#   tasks defaults to all tasks in the batch
+#   tasks_dir defaults to kernelbench dataset path
 
 set -euo pipefail
 
 MODEL="opus"
-if [[ "${1:-}" == "--model" ]]; then
-    MODEL="$2"
-    shift 2
-fi
+TASKS_CSV=""
+TASKS_SOURCE="/lambda/nfs/reward-hacking/harbor/datasets/kernelbench"
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --model)
+            MODEL="$2"
+            shift 2
+            ;;
+        --tasks)
+            TASKS_CSV="$2"
+            shift 2
+            ;;
+        --tasks-dir)
+            TASKS_SOURCE="$2"
+            shift 2
+            ;;
+        --help|-h)
+            echo "Usage: $0 [--model sonnet|opus] [--tasks task1,task2,...] [--tasks-dir /path/to/tasks] [batch_dir] [max_parallel]"
+            exit 0
+            ;;
+        *)
+            break
+            ;;
+    esac
+done
 
 BATCH_DIR="${1:-}"
 MAX_PARALLEL="${2:-8}"
+
+declare -A SELECTED_TASKS=()
+if [[ -n "$TASKS_CSV" ]]; then
+    IFS=',' read -r -a TASK_LIST <<< "$TASKS_CSV"
+    for raw_task in "${TASK_LIST[@]}"; do
+        task_name="${raw_task//[[:space:]]/}"
+        [[ -n "$task_name" ]] && SELECTED_TASKS["$task_name"]=1
+    done
+fi
 
 # Resolve batch dir
 if [[ -z "$BATCH_DIR" ]]; then
@@ -30,18 +63,34 @@ REPORT_DIR="reports/$BATCH_NAME"
 mkdir -p "$REPORT_DIR"
 
 BATCH_ABS=$(cd "$BATCH_DIR" && pwd)
-TASKS_SOURCE="/lambda/nfs/reward-hacking/harbor/datasets/kernelbench"
+
+if [[ ! -d "$TASKS_SOURCE" ]]; then
+    echo "Tasks directory not found: $TASKS_SOURCE"
+    exit 1
+fi
 
 echo "Batch:    $BATCH_ABS"
 echo "Tasks:    $TASKS_SOURCE"
 echo "Reports:  $REPORT_DIR"
 echo "Parallel: $MAX_PARALLEL"
+if (( ${#SELECTED_TASKS[@]} > 0 )); then
+    echo "Selected: $TASKS_CSV"
+else
+    echo "Selected: all"
+fi
 echo
 
 running=0
+found_selected=0
 
-for task_dir in "$BATCH_ABS"/kernelbench-*/; do
+for task_dir in "$BATCH_ABS"/*/; do
     task=$(basename "$task_dir")
+
+    # Optional task filter
+    if (( ${#SELECTED_TASKS[@]} > 0 )) && [[ -z "${SELECTED_TASKS[$task]:-}" ]]; then
+        continue
+    fi
+    (( ${#SELECTED_TASKS[@]} > 0 )) && found_selected=$((found_selected + 1))
 
     # Skip if no jobs dir (not a real task output)
     [[ ! -d "$task_dir/jobs" ]] && continue
@@ -143,4 +192,7 @@ done
 
 wait
 echo
+if (( ${#SELECTED_TASKS[@]} > 0 )) && (( found_selected == 0 )); then
+    echo "Warning: none of the selected tasks were found in $BATCH_ABS"
+fi
 echo "All investigations complete. Reports in $REPORT_DIR/"
