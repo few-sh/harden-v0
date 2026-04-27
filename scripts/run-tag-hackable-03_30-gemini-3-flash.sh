@@ -16,4 +16,4 @@ cd ~/truthserum/harden-v0 \
 --hacker-timeout-multiplier 10.0 \
 --pool-enabled \
 --pool-bootstrap-dir=../datasets/tag_hackable_2026_03_30_dataset_tasks/$BOOTSTRAP_TASK/ \
---output-dir outputs/tb-tag-hackable-2026-03-30-gemini-3-flash
+--output-dir outputs/tb-tag-hackable-2026-03-30-gemini-3-flash-skip-limit
