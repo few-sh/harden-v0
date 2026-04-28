@@ -15,12 +15,11 @@ compared against whatever the verifier returns; the *name* of that metric
 (speedup vs reward) follows `cfg.kernelbench_mode`, not `cfg.oracle`.
 
 Concurrency model (batch mode):
-  `_harden_task_phases` is an async generator that yields at each agent-phase
-  boundary (precheck / hack / fix / validate+replay).  The batch driver
-  advances all active task generators one phase at a time via asyncio.gather,
-  so all prechecks finish before any hack starts, all hacks before any fixer,
-  etc.  The semaphore (passed in by the batch) limits concurrent container
-  runs across all tasks and all phases.
+    `_harden_task_phases` is an async generator that yields once per iteration,
+    after validate+replay (the phase that may persist pool state). The batch
+    driver advances all active task generators together via asyncio.gather.
+    The semaphore (passed in by the batch) limits concurrent container runs
+    across all tasks.
 """
 
 import asyncio
@@ -172,19 +171,16 @@ async def _harden_task_phases(
 ) -> AsyncGenerator[None, None]:
     """Async generator that runs the hardening loop for one task.
 
-    Yields at each agent-phase boundary so that a batch driver can advance
-    all tasks one phase at a time:
+    Yields once per iteration so that a batch driver can advance all tasks
+    together at the same fence:
 
-        yield 1 — after precheck
-        yield 2 — after hack  (per iteration)
-        yield 3 — after fixer (per iteration)
-        yield 4 — after validate+replay (per iteration)
+        yield — after validate+replay (per iteration)
 
-    Tasks that skip a phase (pool-sync, cache hit, no replay) reach the yield
-    without doing container work — they count as "finished" for that phase.
-    Tasks that terminate early (robust, legitimate threshold, precheck failure)
-    return before the next yield; the batch sees StopAsyncIteration and marks
-    them done.
+    This fence is intentionally placed after the phase that may write/persist
+    pool state so all tasks observe a consistent pool view at iteration
+    boundaries. Tasks that terminate early (robust, legitimate threshold,
+    precheck failure) return before the next yield; the batch sees
+    StopAsyncIteration and marks them done.
 
     `semaphore` limits concurrent container runs across all tasks/phases.
     Results are written into `result_out` (list) as a single dict.
@@ -276,8 +272,6 @@ async def _harden_task_phases(
         return  # done — exits before first yield
 
     logger.info("Pre-check passed (reward=%.2f). Starting hardening loop.", reward)
-
-    yield  # ── phase boundary: precheck done ──────────────────────────────────
 
     # ── Cross-iteration state ─────────────────────────────────────────────────
     reuse_hack: tuple[str, float] | None = None
@@ -429,8 +423,6 @@ async def _harden_task_phases(
         iter_info["hack_reward"] = hack_reward if not pool_advanced else None
         original_instruction = (original_dir / "instruction.md").read_text()
 
-        yield  # ── phase boundary: hack done ──────────────────────────────────
-
         # ── FIX PHASE ─────────────────────────────────────────────────────────
         fixer_instruction = build_fixer_instruction(
             original_instruction, hack_summary, previous_failure,
@@ -468,8 +460,6 @@ async def _harden_task_phases(
                 force_build=True,
                 image_name=harden_image,
             )
-
-        yield  # ── phase boundary: fix done ────────────────────────────────────
 
         # ── VALIDATE + REPLAY PHASE ───────────────────────────────────────────
         fix_applied = False
@@ -622,7 +612,7 @@ async def _harden_task_phases(
             previous_failure = str(e)
             legitimate_streak = 0
 
-        yield  # ── phase boundary: validate+replay done ─────────────────────
+        yield  # ── iteration fence: after validate+replay (pool writes done) ─
 
         # End-of-iteration bookkeeping (skipped for pool-sync / legitimate early-exit
         # paths that already appended iter_info above).
