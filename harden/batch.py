@@ -1,13 +1,12 @@
 """Batch orchestrator for hardening multiple tasks concurrently.
 
-Concurrency model: all active tasks advance one agent-phase at a time via
-asyncio.gather, so all prechecks finish before any hack starts, all hacks
-before any fixer, etc.  An asyncio.Semaphore(max_concurrent_containers)
-limits concurrent container runs across tasks and phases; it is acquired
-inside _harden_task_phases for each container-heavy step.
+Concurrency model: all active tasks advance one full hardening iteration at a
+time via asyncio.gather. `_harden_task_phases` yields once per iteration,
+after validate+replay (the section that may persist pool state). An
+asyncio.Semaphore(max_concurrent_containers) limits concurrent container runs
+across tasks and is acquired inside _harden_task_phases for each
+container-heavy step.
 
-Tasks that skip a phase (pool-sync, cache hit, no replay) reach the phase
-yield without doing container work and count as finished for that phase.
 Tasks that terminate early (robust, legitimate threshold, precheck failure)
 return from the generator before the next yield; the gather sees
 StopAsyncIteration and the task is collected as done.
@@ -142,7 +141,7 @@ async def harden_batch(config: BatchHardenConfig) -> list[dict]:
         n_done = 0
 
         async def _advance(tid: str, gen: AsyncGenerator) -> tuple[str, bool]:
-            """Advance one generator by one phase. Returns (tid, still_active).
+            """Advance one generator by one iteration fence. Returns (tid, still_active).
 
             Calls __anext__() which runs the generator body until its next yield
             statement, then suspends.  Two outcomes:
@@ -166,22 +165,16 @@ async def harden_batch(config: BatchHardenConfig) -> list[dict]:
                     ro.append({"task_id": tid, "status": "error", "error": str(e)})
                 return tid, False
 
-        # ── Phase-barrier loop ────────────────────────────────────────────────
-        # Each gather call is one phase boundary: all tasks must reach their
-        # next yield (or finish) before any task begins the next phase.
+        # ── Iteration-barrier loop ────────────────────────────────────────────
+        # Each gather call advances all active tasks to their next iteration
+        # fence (or completion).
         #
         # heavy work inside the generator acquires `semaphore` first, so at most
         # max_concurrent_containers tasks run containers at any one time — but
         # the gather itself waits for ALL tasks to reach the yield (or finish)
-        # before this loop body continues.  That wait is the phase barrier:
-        # no task can begin the next phase until every task has completed the
-        # current one.
-        #
-        # Iteration 1 of this loop  →  precheck phase   (yield 1 in loop.py)
-        # Iteration 2               →  hack phase        (yield 2, iteration 0)
-        # Iteration 3               →  fix phase         (yield 3, iteration 0)
-        # Iteration 4               →  validate phase    (yield 4, iteration 0)
-        # Iteration 5               →  hack phase        (yield 2, iteration 1)
+        # before this loop body continues. That wait is the iteration barrier:
+        # no task begins its next iteration until every active task has either
+        # reached the fence or completed.
         try:
             while task_gens:
                 phase_outcomes = await asyncio.gather(
