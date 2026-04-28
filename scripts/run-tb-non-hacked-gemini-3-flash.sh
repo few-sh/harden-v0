@@ -1,4 +1,3 @@
-BOOTSTRAP_TASK=password-recovery
 cd ~/truthserum/harden-v0 \
 && uv run python harden.py --tasks-dir ../datasets/TerminalBench-original-non-hacked \
 --all \
@@ -15,5 +14,5 @@ cd ~/truthserum/harden-v0 \
 --solver-timeout-multiplier 10.0 \
 --hacker-timeout-multiplier 10.0 \
 --pool-enabled \
---pool-bootstrap-dir=../datasets/TerminalBench-original-non-hacked/$BOOTSTRAP_TASK/ \
+--pool-bootstrap-dir=../datasets/TerminalBench-original-non-hacked \
 --output-dir outputs/tb-non-hacked-gemini-3-flash

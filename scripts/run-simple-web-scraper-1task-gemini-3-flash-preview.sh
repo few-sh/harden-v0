@@ -15,5 +15,5 @@ cd ~/truthserum/harden-v0 \
 --solver-timeout-multiplier 10.0 \
 --hacker-timeout-multiplier 10.0 \
 --pool-enabled \
---pool-bootstrap-dir=../datasets/TerminalBench-original-non-hacked/$TASK_NAME/ \
+--pool-bootstrap-dir=../datasets/TerminalBench-original-non-hacked \
 --output-dir outputs/single-task-$TASK_NAME-gemini-3-flash-1task

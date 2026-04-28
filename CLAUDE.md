@@ -98,7 +98,7 @@ python -m harden --all
 
 # Pooled (jumper) batch — tasks share a defense repo
 python -m harden --oracle --all --hacker-privileged \
-  --pool-enabled --pool-bootstrap-dir <path-to-hardened-task> \
+  --pool-enabled --pool-bootstrap-dir <path-to-tasks-parent-dir> \
   --hack-threshold 10 --solver-threshold 0.5 \
   --max-concurrent 7
 ```
@@ -115,14 +115,14 @@ python -m harden --oracle --all --hacker-privileged \
 - `--hacker-privileged` — mount the evaluation environment (tests/, environment/) read-only at `/eval_env/` so the hacker can whitebox-inspect the verifier.
 - `--hacker-feedback` — give hacker read-only access to previous failed attempts.
 - `--replay-enabled`, `--replay-retries` — enable targeted-replay post-solver gate; a constrained hacker re-attempts the prior exploit on the patched task, and the fix is rejected if it re-lands. Reuses hacker model/turns/timeout knobs, and inherits `--hacker-privileged` (if the hacker had `/eval_env/` access, replay does too — the exploit may reference it).
-- `--pool-enabled`, `--pool-bootstrap-dir <hardened_task_dir>`, `--pool-port <N>` — enable jumper / pooled mode. Opt-in; default off. Host-side `git daemon` serves a bare pool repo at `<output_dir>/pool.git`; fixer containers clone/push to `git://host.docker.internal:<port>/pool.git`. Port auto-bumps on conflict.
+- `--pool-enabled`, `--pool-bootstrap-dir <tasks_parent_dir>`, `--pool-port <N>` — enable jumper / pooled mode. Opt-in; default off. Host-side `git daemon` serves a bare pool repo at `<output_dir>/pool.git`; fixer containers clone/push to `git://host.docker.internal:<port>/pool.git`. Port auto-bumps on conflict.
 
 ### Pooled (jumper) mode
 
 When `--pool-enabled`:
 - **Linux Docker Engine >= 20.10 required** — fixer containers reach the host-side daemon via `host.docker.internal:host-gateway` in docker-compose.yaml, and `host-gateway` is a Linux-only special value added in 20.10.
 - **Security**: the `git daemon` listens on `0.0.0.0` with `--enable=receive-pack` and no authentication, because containers reach the host via the Docker bridge gateway (not loopback). Anyone with network access to the port can push arbitrary commits into the pool — which are then executed by fixer containers. Only run on hosts where the port is firewalled off from untrusted networks.
-- Bootstrap: a fresh bare repo is initialized from `--pool-bootstrap-dir`'s `tests/`; commit message `[bootstrap] from <path>`. If `<output_dir>/pool.git/` already exists, it's reused (so you can pre-populate the pool with any history).
+- Bootstrap: a fresh bare repo is initialized from `--pool-bootstrap-dir`, which must be a *parent directory* containing one `<task_id>/tests/` subdir per task. The pool is laid out as `tasks/<task_id>/tests/...` — each task gets its own slot. A `pre-receive` hook installed in the bare repo enforces that fixer pushes (author `harden-fixer-<task_id>`) touch *only* paths under their own `tasks/<task_id>/` slot; bootstrap commits (author `harden@localhost`) are exempt. Commit message `[bootstrap] <N> tasks from <path>`. If `<output_dir>/pool.git/` already exists, it's reused (so you can pre-populate the pool with any history).
 - Per-task last-seen SHA at `<task_output_dir>/pool_sha.txt`. Fresh tasks start with an empty/`None` cursor, so iter 0 always skip-hacker to catch up from bootstrap through any commits already in the pool. Persisted only at commit points (fix validated, pool-sync no-op, or legitimate flag) — an iteration that crashes does NOT silently mark pool commits as seen.
 - Iteration branches:
   - If pool HEAD advanced beyond last-seen → **skip hacker**, show fixer a git log of new commits. Valid fixer outcomes: port into local, refine pool, or no-op (`outcome: pool_sync_noop`).

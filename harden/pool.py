@@ -26,6 +26,54 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 
+# Server-side enforcement of per-task write isolation. The bare repo runs this
+# on every push (including from inside fixer containers, since `git daemon` is
+# the only push transport). Errors written to stderr are surfaced to the
+# pushing client, so the fixer agent sees them in `git push` output and can
+# self-correct on the next iteration.
+_PRE_RECEIVE_HOOK = r"""#!/bin/sh
+set -e
+status=0
+zero=0000000000000000000000000000000000000000
+while read -r oldrev newrev refname; do
+  [ "$newrev" = "$zero" ] && continue
+  if [ "$oldrev" = "$zero" ]; then
+    range="$newrev"
+  else
+    range="$oldrev..$newrev"
+  fi
+  for sha in $(git rev-list "$range"); do
+    author_email=$(git log -1 --format='%ae' "$sha")
+    author_name=$(git log -1 --format='%an' "$sha")
+
+    # Bootstrap identity is always allowed.
+    if [ "$author_email" = "harden@localhost" ]; then
+      continue
+    fi
+
+    case "$author_name" in
+      harden-fixer-*) task_id=${author_name#harden-fixer-} ;;
+      *)
+        echo "[pre-receive] reject $sha: author '$author_name' is not harden-fixer-<task_id>" >&2
+        status=1
+        continue
+        ;;
+    esac
+
+    bad_paths=$(git diff-tree --no-commit-id --name-only -r "$sha" \
+                | grep -v "^tasks/${task_id}/" || true)
+    if [ -n "$bad_paths" ]; then
+      echo "[pre-receive] reject $sha (author=$author_name):" >&2
+      echo "  commit touches paths outside tasks/${task_id}/:" >&2
+      echo "$bad_paths" | sed 's/^/    /' >&2
+      status=1
+    fi
+  done
+done
+exit $status
+"""
+
+
 def _run(cmd: list[str], cwd: Path | None = None, check: bool = True) -> subprocess.CompletedProcess:
     return subprocess.run(
         cmd,
@@ -152,32 +200,56 @@ class PoolServer:
             return
         if not self.bootstrap_from.is_dir():
             raise FileNotFoundError(f"bootstrap_from not a directory: {self.bootstrap_from}")
-        tests_src = self.bootstrap_from / "tests"
-        if not tests_src.is_dir():
-            raise FileNotFoundError(f"no tests/ in bootstrap_from: {self.bootstrap_from}")
+
+        # bootstrap_from is a directory containing one subdirectory per task,
+        # each with its own tests/. We seed the pool with a per-task layout:
+        #   tasks/<task_id>/tests/...
+        # The pre-receive hook then pins each fixer's writes to its own slot.
+        task_dirs = sorted(
+            d for d in self.bootstrap_from.iterdir()
+            if d.is_dir() and (d / "tests").is_dir()
+        )
+        if not task_dirs:
+            raise FileNotFoundError(
+                f"no <task_id>/tests/ subdirs under {self.bootstrap_from}"
+            )
 
         self.pool_parent.mkdir(parents=True, exist_ok=True)
         _run(["git", "init", "--bare", "--initial-branch=main", str(self.bare_path)])
         # Allow `git daemon` to export this repo (default requires git-daemon-export-ok).
         (self.bare_path / "git-daemon-export-ok").touch()
+        self._install_pre_receive_hook()
 
         with tempfile.TemporaryDirectory() as scratch:
             scratch_path = Path(scratch) / "work"
             _run(["git", "clone", str(self.bare_path), str(scratch_path)])
             # Local identity so commit succeeds without global git config.
+            # The pre-receive hook recognizes `harden@localhost` as the
+            # bootstrap identity and exempts it from the per-task path rule.
             _run(["git", "config", "user.email", "harden@localhost"], cwd=scratch_path)
             _run(["git", "config", "user.name", "harden"], cwd=scratch_path)
 
-            dest_tests = scratch_path / "tests"
-            shutil.copytree(tests_src, dest_tests)
+            tasks_root = scratch_path / "tasks"
+            tasks_root.mkdir()
+            for td in task_dirs:
+                shutil.copytree(td / "tests", tasks_root / td.name / "tests")
 
             _run(["git", "add", "-A"], cwd=scratch_path)
             _run(
-                ["git", "commit", "-m", f"[bootstrap] from {self.bootstrap_from}"],
+                ["git", "commit", "-m",
+                 f"[bootstrap] {len(task_dirs)} tasks from {self.bootstrap_from}"],
                 cwd=scratch_path,
             )
             _run(["git", "push", "origin", "main"], cwd=scratch_path)
-        logger.info("Pool bootstrapped at %s", self.bare_path)
+        logger.info(
+            "Pool bootstrapped at %s with %d tasks", self.bare_path, len(task_dirs),
+        )
+
+    def _install_pre_receive_hook(self) -> None:
+        """Install the per-task isolation hook into the bare repo."""
+        hook = self.bare_path / "hooks" / "pre-receive"
+        hook.write_text(_PRE_RECEIVE_HOOK)
+        hook.chmod(0o755)
 
     def _launch_daemon(self) -> None:
         # SECURITY NOTE: receive-pack is enabled with no authentication — anyone

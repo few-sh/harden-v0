@@ -1,4 +1,3 @@
-BOOTSTRAP_TASK=5
 cd ~/truthserum/harden-v0 \
 && uv run python harden.py --tasks-dir ../datasets/tag_hackable_2026_03_30_dataset_tasks \
 --all \
@@ -15,5 +14,5 @@ cd ~/truthserum/harden-v0 \
 --solver-timeout-multiplier 10.0 \
 --hacker-timeout-multiplier 10.0 \
 --pool-enabled \
---pool-bootstrap-dir=../datasets/tag_hackable_2026_03_30_dataset_tasks/$BOOTSTRAP_TASK/ \
+--pool-bootstrap-dir=../datasets/tag_hackable_2026_03_30_dataset_tasks \
 --output-dir outputs/tb-tag-hackable-2026-03-30-gemini-3-flash-skip-limit

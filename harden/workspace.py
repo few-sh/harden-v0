@@ -359,6 +359,11 @@ def prepare_fixer_environment(
             f"    git config user.name \"harden-fixer-{task_id}\" && \\\n"
             "    git config pull.rebase true)\n"
             "  git config --global --add safe.directory /pool\n"
+            # Per-task isolation: every fixer writes only to its own slot.
+            # Server-side pre-receive hook enforces that pushed commits
+            # touch nothing outside tasks/<task_id>/. Pre-create the slot
+            # so newly-added tasks (not present at bootstrap) can still push.
+            f"  mkdir -p /pool/tasks/{task_id}\n"
             "fi\n"
         )
 

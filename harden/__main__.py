@@ -120,7 +120,10 @@ def _build_parser() -> argparse.ArgumentParser:
                              "a host-side git daemon. Fixer containers clone/push to the pool. "
                              "Linux Docker Engine >= 20.10 only (uses extra_hosts:host-gateway).")
     parser.add_argument("--pool-bootstrap-dir", type=Path, default=None,
-                        help="Hardened task dir to bootstrap the pool from (required if --pool-enabled).")
+                        help="Parent directory containing one <task_id>/tests/ subdir per task. "
+                             "The pool is seeded with `tasks/<task_id>/tests/` for each, and a "
+                             "pre-receive hook pins each fixer's writes to its own slot. "
+                             "Required if --pool-enabled.")
     parser.add_argument("--pool-port", type=int, default=9418,
                         help="Port for git daemon (default 9418; auto-bumps if busy).")
     parser.add_argument("--pool-max-consecutive-syncs", type=int, default=1,
