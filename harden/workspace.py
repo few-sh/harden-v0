@@ -358,6 +358,9 @@ def prepare_fixer_environment(
             "    git config user.email fixer@harden && \\\n"
             f"    git config user.name \"harden-fixer-{task_id}\" && \\\n"
             "    git config pull.rebase true)\n"
+            "  if [ ! -f /pool/fixer.md ]; then\n"
+            f"    echo \"This journal records reusable hardening ideas and concrete fixes discovered while hardening task {task_id}.\" > /pool/fixer.md\n"
+            "  fi\n"
             "  git config --global --add safe.directory /pool\n"
             "fi\n"
         )

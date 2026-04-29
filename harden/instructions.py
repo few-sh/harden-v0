@@ -291,10 +291,12 @@ A shared defense pool is available at `/pool/` — a git working copy tracking
 `origin/main` at a host-side git server. Other tasks' fixers are committing to
 the same remote concurrently.
 
-**What the pool contains.** A mirror of a task's `tests/` directory, with
-exactly the files that form the canonical, task-agnostic defense. The pool was
-bootstrapped from an initial task, and every subsequent commit in its git history
-is a defense improvement pushed by some other task's fixer. Commits follow
+**What the pool contains.** A shared fixer journal at:
+
+    /pool/fixer.md
+
+Each `fixer.md` entry captures reusable hardening ideas discovered by that task.
+Commits follow
 the format `[<task_id> iter-<N>] <attack_class>: <summary>`, so `git log` is
 effectively a chronological audit of every attack class defended against so
 far across the batch.
@@ -303,8 +305,8 @@ Use the pool whenever your fix generalizes beyond this task:
 
 - Inspect state: `cd /pool && git log --oneline`, `git show <sha>`, `cat ...`.
 - Pull latest before editing: `cd /pool && git pull --rebase origin main`.
-- Edit files in `/pool/`, then stage and commit:
-  `cd /pool && git add -A && git commit -m "[{task_id} iter-{iteration}] <attack_class>: <one-line summary>"`
+- Update the shared journal in `/pool/fixer.md`, then stage and commit:
+    `cd /pool && git add -A && git commit -m "[{task_id} iter-{iteration}] <attack_class>: <one-line summary>"`
 - Push: `cd /pool && git push origin main`.
 - If push is rejected with "non-fast-forward" (another task pushed first):
   `git pull --rebase origin main`  (resolve any conflicts if prompted),
@@ -313,25 +315,52 @@ Use the pool whenever your fix generalizes beyond this task:
 Commit message format: `[{task_id} iter-{iteration}] <attack_class>: <summary>`.
 Keep the first line short; long rationale goes in the body.
 
-**When to push to the pool vs. keep local in `/logs/artifacts/`:**
-- **Always update your local `/logs/artifacts/tests/` files with your changes first.**
-- **Do not only push to the pool**: the pool is the canonical repo for shared, task-agnostic defenses,
-  but every fix must also update the local state for this task.
-- **Push to pool as well** if the fix addresses a *general* attack class (e.g., stack-frame
-  inspection, timing monkeypatching) — other tasks benefit immediately.
-- When in doubt, push the improvement to the pool too. It's much better to share defenses than to let
-  each task redo the same work.
+**Do not copy task test files into `/pool/` slots. Append notes to the fixer.md file instead!**
 
-**How to propagate changes:**
-- *If your fix generalizes*: update `/logs/artifacts/tests/`, then copy the improved version to the pool (e.g., `/pool/tests/eval_kernel.py`) and push.
-- *For purely local fixes*: only update `/logs/artifacts/tests/` and commit locally.
+### Required journal format (`/pool/fixer.md`)
 
-Example commands for pushing to the pool:
-  `cp /logs/artifacts/tests/eval_kernel.py /pool/tests/eval_kernel.py`
-  `cd /pool && git add -A && git commit -m "[{task_id} iter-{iteration}] <attack_class>: <one-line summary>"`
-  `git push origin main`
+For each generalized hardening idea, add:
 
-Commit your local changes as usual after updating your local files.
+- task id
+- target file
+- fix description
+- a short 2-3 line code snippet when it helps implementation clarity
+
+Use this simple format:
+
+```
+## Task: {task_id}
+
+### <file>
+- Fix: <what to change and why>
+```<lang>
+<2-3 line snippet>
+<2-3 line snippet>
+```
+```
+
+Example:
+
+```
+### test.sh
+- Fix: execute the test as non-root user, using `sudo`.
+```sh
+useradd -m tester || true
+sudo -u tester -H bash -lc "python -m pytest /tests/test_outputs.py -v"
+```
+```
+
+**How to use the journal during fixing:**
+- Read other tasks' `fixer.md` files to discover broadly applicable defenses.
+- Apply relevant ideas to your local `/logs/artifacts/tests/` and `/logs/artifacts/environment/`.
+- Record your new generalized ideas back into `/pool/fixer.md`.
+
+Example commands for pushing to the pool journal:
+    `printf '\n## Task: {task_id}\n\n### test.sh\n- Fix: execute tests as non-root via sudo.\n```sh\nuseradd -m tester || true\nsudo -u tester -H bash -lc "python -m pytest /tests/test_outputs.py -v"\n```\n' >> /pool/fixer.md`
+    `cd /pool && git add -A && git commit -m "[{task_id} iter-{iteration}] <attack_class>: <one-line summary>"`
+    `git push origin main`
+
+Commit your local task changes as usual after updating `/logs/artifacts/`.
 """
 
 
@@ -354,12 +383,11 @@ some may be from other tasks. Decide how to react:
 - **Do nothing.** If the pool advance doesn't affect this task (e.g., the new
   commits are your own, or are about unrelated files / attack classes), it is
   completely fine to make zero changes this iteration. Don't fabricate work.
-- **Port into local.** If the pool's new defenses apply here cleanly, copy the
-  relevant files into `/logs/artifacts/tests/` and commit locally.
-  `cp /pool/tests/eval_kernel.py /logs/artifacts/tests/eval_kernel.py`
-  `cd /logs/artifacts && git add -A && git commit -m 'sync from pool'`
-- **Refine pool further.** If porting reveals a gap specific to this task, patch
-  `/pool/` further and push a new commit, then also port it locally.
+- **Port ideas (not files) into local.** If new journal entries from other tasks
+    apply here, implement equivalent fixes in `/logs/artifacts/tests/` and/or
+    `/logs/artifacts/environment/`, then commit locally.
+- **Refine pool further.** If you discover a reusable hardening approach, append
+    it to `/pool/fixer.md` and push a new commit.
 
 Doing nothing when nothing is needed is a valid and preferred outcome.
 """
