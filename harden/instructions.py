@@ -323,7 +323,7 @@ Keep the first line short; long rationale goes in the body.
 
 **How to propagate changes:**
 - *If your fix generalizes*: make minimal edits to the files at the destination (e.g., `/pool/tests/test.sh`) and push.
-- *MAKE SURE YOU READ THE FILE BEFORE EDITING. Only perform MINIMAL edits. If an existing set of lines look like a better fix, DO NOT OVERWRITE THEM. Instead, adapt your fix to work with the existing lines, or if they already address the issue, don't push a new fix at all. The pool is a shared resource — treat it with care and respect other tasks' contributions.
+- *MAKE SURE YOU READ THE FILE BEFORE EDITING. Only perform MINIMAL edits. If an existing set of lines look like a better fix, DO NOT OVERWRITE THEM. Instead, adapt your fix to work with the existing lines, or if they already address the issue, don't push a new fix at all. The pool is a shared resource — treat it with care and respect other tasks' contributions.*
 - *For purely local fixes*: only update `/logs/artifacts/tests/` and commit locally.
 
 Example commands for pushing to the pool:
