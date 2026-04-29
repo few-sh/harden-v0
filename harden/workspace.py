@@ -358,6 +358,12 @@ def prepare_fixer_environment(
             "    git config user.email fixer@harden && \\\n"
             f"    git config user.name \"harden-fixer-{task_id}\" && \\\n"
             "    git config pull.rebase true)\n"
+            "  if [ ! -d /pool/environment ]; then\n"
+            "    cp -a /logs/artifacts/. /pool/environment/\n"
+            "  fi\n"
+            "  if [ ! -d /pool/tests ]; then\n"
+            "    cp -a /tests/. /pool/tests/\n"
+            "  fi\n"
             "  git config --global --add safe.directory /pool\n"
             "fi\n"
         )
