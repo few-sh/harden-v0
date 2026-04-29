@@ -318,8 +318,7 @@ Keep the first line short; long rationale goes in the body.
 - **Always update your local `/logs/artifacts/tests/` files with your changes first.**
 - **Do not only push to the pool**: the pool is the canonical repo for shared, task-agnostic defenses,
   but every fix must also update the local state for this task.
-- **Push to pool as well** ONLY the changes that addresses a *general* attack class (e.g., timing, monkeypatching, permissions, general environent hardening) — other tasks benefit immediately. The changes must NOT contain any specifics of this task. Eg specific test payloads
-  or specific software packages that are not already in the original pool task, unless they are general defense tools.
+- Push to pool as well ONLY the changes that address a general attack class (e.g., timing, monkeypatching, permissions, general environment hardening) — other tasks benefit immediately. The changes must NOT contain any specifics of this task. e.g., specific test payloads or specific software packages that are not already in the original pool task, unless they are general defense tools.
 - When in doubt, do not make changes to the pool.
 
 **How to propagate changes:**
