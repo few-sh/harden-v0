@@ -16,4 +16,4 @@ cd ~/truthserum/harden-v0 \
 --hacker-timeout-multiplier 10.0 \
 --pool-enabled \
 --pool-bootstrap-dir=../datasets/tag_hackable_2026_03_30_dataset_tasks \
---output-dir outputs/sota-15task-hacker-priv-gemini-3-flash-lockstep
+--output-dir outputs/sota-15task-hacker-priv-gemini-3-flash-structured-pool

@@ -302,8 +302,15 @@ filesystem — read them freely for inspiration; do not modify them.
 
 Workflow:
 
-- Inspect the pool: `cd /pool && git log --oneline`, `git show <sha>`,
-  `ls /pool/tasks/`, `cat /pool/tasks/<other>/tests/...`.
+- **Required first step: review commit history across tasks for reusable defenses.**
+    Start with: `cd /pool && git log --oneline`, `git show <sha>`,
+    `ls /pool/tasks/`, `cat /pool/tasks/<other>/tests/...`.
+    Do not limit yourself to your own slot: examine commits and changed test files
+    from multiple tasks, identify hardening patterns that generalize, and apply
+    relevant ideas to this task.
+- When useful, inspect a larger range to mine ideas: `git log --oneline -- tasks/`,
+    `git diff <old_sha>..<new_sha> -- tasks/<other>/tests/`,
+    `git show <sha> -- tasks/<other>/tests/...`.
 - Pull latest before editing: `cd /pool && git pull --rebase origin main`.
 - Edit files under `/pool/tasks/{task_id}/tests/` (mirror the changes you
   made under `/logs/artifacts/tests/`).
@@ -324,6 +331,8 @@ Workflow:
 - Mirror improvements into `/pool/tasks/{task_id}/tests/` so other tasks can
   read them. Pushing is cheap and pure benefit — other tasks may borrow your
   defense even though they cannot edit your slot.
+- Before finalizing, sanity-check that you considered cross-task ideas from the
+    pool commit log and incorporated any applicable general hardening patterns.
 - If you want to adopt another task's fix, copy the file content out of
   `/pool/tasks/<other>/tests/...` into your own `/logs/artifacts/tests/...`
   and (optionally) `/pool/tasks/{task_id}/tests/...`.
@@ -436,6 +445,7 @@ def build_fixer_instruction(
             body += POOL_ADVANCED_HINT_TEMPLATE.format(
                 last_seen_short=(last_seen_sha or "")[:8] or "(unknown)",
                 pool_log=pool_log,
+                task_id=task_id or "<task>",
             )
         body += POOL_FIXER_HINT_TEMPLATE.format(
             task_id=task_id or "<task>",
