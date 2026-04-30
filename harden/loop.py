@@ -91,7 +91,7 @@ async def _run_targeted_replay(
                 original_instruction, hack_summary, kernelbench_mode=cfg.kernelbench_mode
             ),
         )
-        if _hacker_privileged_enabled(cfg, iteration) and prepare_privileged_hacker_environment(
+        if _hacker_privileged_enabled(cfg, hack_iterations) and prepare_privileged_hacker_environment(
             replay_parent, cfg.task_id
         ):
             append_to_instruction(replay_parent, cfg.task_id, HACKER_PRIVILEGED_HINT)
