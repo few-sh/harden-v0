@@ -79,6 +79,7 @@ async def _run_targeted_replay(
     output: Path,
     harden_image: str,
     iteration: int,
+    hack_iteration: int,
 ) -> float:
     """Up to cfg.replay_retries attempts; returns max reward observed."""
     best = 0.0
@@ -91,7 +92,7 @@ async def _run_targeted_replay(
                 original_instruction, hack_summary, kernelbench_mode=cfg.kernelbench_mode
             ),
         )
-        if _hacker_privileged_enabled(cfg, hack_iterations) and prepare_privileged_hacker_environment(
+        if _hacker_privileged_enabled(cfg, hack_iteration) and prepare_privileged_hacker_environment(
             replay_parent, cfg.task_id
         ):
             append_to_instruction(replay_parent, cfg.task_id, HACKER_PRIVILEGED_HINT)
@@ -574,6 +575,7 @@ async def _harden_task_phases(
                             replay_reward = await _run_targeted_replay(
                                 config, hardened_task_dir, fixer_trial, hack_summary,
                                 original_instruction, output, harden_image, iteration,
+                                hack_iteration=hack_iterations - 1,
                             )
                         iter_info["replay_reward"] = replay_reward
 
