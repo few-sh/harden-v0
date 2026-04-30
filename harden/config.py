@@ -70,6 +70,8 @@ class HardenConfig:
     hacker_timeout_multiplier: float = 2.0
     fixer_timeout_multiplier: float = 10.0
     hacker_privileged: bool = False
+    # When hacker_privileged is enabled, disable it starting at this iteration index.
+    hacker_privileged_disable_iteration: int = 5
 
     # Targeted replay (post-solver gate): re-run hacker constrained to reproduce the
     # specific prior exploit on the patched task. If the exploit re-lands, the fix

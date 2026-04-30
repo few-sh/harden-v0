@@ -64,6 +64,12 @@ from .workspace import (
 logger = logging.getLogger(__name__)
 
 
+def _hacker_privileged_enabled(cfg: HardenConfig, iteration: int) -> bool:
+    if not cfg.hacker_privileged:
+        return False
+    return iteration < cfg.hacker_privileged_disable_iteration
+
+
 async def _run_targeted_replay(
     cfg: HardenConfig,
     hardened_task_dir: Path,
@@ -85,7 +91,7 @@ async def _run_targeted_replay(
                 original_instruction, hack_summary, kernelbench_mode=cfg.kernelbench_mode
             ),
         )
-        if cfg.hacker_privileged and prepare_privileged_hacker_environment(
+        if _hacker_privileged_enabled(cfg, iteration) and prepare_privileged_hacker_environment(
             replay_parent, cfg.task_id
         ):
             append_to_instruction(replay_parent, cfg.task_id, HACKER_PRIVILEGED_HINT)
@@ -370,7 +376,7 @@ async def _harden_task_phases(
                     replace_instruction(hacker_parent, config.task_id, hacker_instruction)
 
                     hacker_privileged_modified = False
-                    if config.hacker_privileged:
+                    if _hacker_privileged_enabled(config, iteration):
                         if prepare_privileged_hacker_environment(hacker_parent, config.task_id):
                             append_to_instruction(hacker_parent, config.task_id, HACKER_PRIVILEGED_HINT)
                             hacker_privileged_modified = True

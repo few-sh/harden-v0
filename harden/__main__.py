@@ -98,6 +98,9 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--hacker-privileged", action="store_true",
                         help="Give hacker read-only access to the evaluation environment "
                              "(tests/, environment/) at /eval_env/")
+    parser.add_argument("--hacker-privileged-disable-iteration", type=int, default=5,
+                        help="Iteration index at which --hacker-privileged is disabled "
+                             "(default: 5). Only applies when --hacker-privileged is set")
 
     # Targeted replay (post-solver gate) — reuses hacker knobs for model/turns/timeout.
     parser.add_argument("--replay-enabled", action="store_true",
@@ -169,6 +172,7 @@ def _config_kwargs(args: argparse.Namespace) -> dict:
         solver_privileged=args.solver_privileged,
         hacker_feedback=args.hacker_feedback,
         hacker_privileged=args.hacker_privileged,
+        hacker_privileged_disable_iteration=args.hacker_privileged_disable_iteration,
         replay_enabled=args.replay_enabled,
         replay_retries=args.replay_retries,
         harbor_config=args.harbor_config,
@@ -206,6 +210,9 @@ def main(argv: list[str] | None = None) -> None:
             parser.error("--pool-enabled requires --pool-bootstrap-dir")
         if not args.pool_bootstrap_dir.is_dir():
             parser.error(f"--pool-bootstrap-dir not a directory: {args.pool_bootstrap_dir}")
+
+    if args.hacker_privileged_disable_iteration < 0:
+        parser.error("--hacker-privileged-disable-iteration must be >= 0")
 
     args.resume = args.output_dir.exists()
     args.output_dir.mkdir(parents=True, exist_ok=True)
