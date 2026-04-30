@@ -376,7 +376,7 @@ async def _harden_task_phases(
                     replace_instruction(hacker_parent, config.task_id, hacker_instruction)
 
                     hacker_privileged_modified = False
-                    if _hacker_privileged_enabled(config, iteration):
+                    if _hacker_privileged_enabled(config, hack_iterations - 1):
                         if prepare_privileged_hacker_environment(hacker_parent, config.task_id):
                             append_to_instruction(hacker_parent, config.task_id, HACKER_PRIVILEGED_HINT)
                             hacker_privileged_modified = True
