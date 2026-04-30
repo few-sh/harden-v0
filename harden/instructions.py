@@ -294,7 +294,7 @@ the same remote concurrently.
 **What the pool contains.** A mirror of a task's `tests/` directory, with
 exactly the files that form the canonical, task-agnostic defense. The pool was
 bootstrapped from an initial task, and every subsequent commit in its git history
-is a defense improvement pushed by some other task's fixer. Commits follow
+is a GENERAL, task-agnostic defense improvement pushed by some other task's fixer. Commits follow
 the format `[<task_id> iter-<N>] <attack_class>: <summary>`, so `git log` is
 effectively a chronological audit of every attack class defended against so
 far across the batch.
@@ -303,6 +303,7 @@ Use the pool whenever your fix generalizes beyond this task:
 
 - Inspect state: `cd /pool && git log --oneline`, `git show <sha>`, `cat ...`.
 - Pull latest before editing: `cd /pool && git pull --rebase origin main`.
+- Examine the files in the /pool/. Read each file.
 - Edit files in `/pool/`, then stage and commit:
   `cd /pool && git add -A && git commit -m "[{task_id} iter-{iteration}] <attack_class>: <one-line summary>"`
 - Push: `cd /pool && git push origin main`.
@@ -317,17 +318,17 @@ Keep the first line short; long rationale goes in the body.
 - **Always update your local `/logs/artifacts/tests/` files with your changes first.**
 - **Do not only push to the pool**: the pool is the canonical repo for shared, task-agnostic defenses,
   but every fix must also update the local state for this task.
-- **Push to pool as well** if the fix addresses a *general* attack class (e.g., stack-frame
-  inspection, timing monkeypatching) — other tasks benefit immediately.
-- When in doubt, push the improvement to the pool too. It's much better to share defenses than to let
-  each task redo the same work.
+- Push to pool as well ONLY the changes that address a general attack class (e.g., timing, monkeypatching, permissions, general environment hardening) — other tasks benefit immediately. The changes must NOT contain any specifics of this task. e.g., specific test payloads or specific software packages that are not already in the original pool task, unless they are general defense tools.
+- When in doubt, do not make changes to the pool.
 
 **How to propagate changes:**
-- *If your fix generalizes*: update `/logs/artifacts/tests/`, then copy the improved version to the pool (e.g., `/pool/tests/eval_kernel.py`) and push.
+- *If your fix generalizes*: make minimal edits to the files at the destination (e.g., `/pool/tests/test.sh`) and push.
+- *MAKE SURE YOU READ THE FILE BEFORE EDITING. Only perform MINIMAL edits. If an existing set of lines look like a better fix, DO NOT OVERWRITE THEM. Instead, adapt your fix to work with the existing lines, or if they already address the issue, don't push a new fix at all. The pool is a shared resource — treat it with care and respect other tasks' contributions.*
 - *For purely local fixes*: only update `/logs/artifacts/tests/` and commit locally.
 
 Example commands for pushing to the pool:
-  `cp /logs/artifacts/tests/eval_kernel.py /pool/tests/eval_kernel.py`
+  `sed ... /pool/tests/test.sh` # make edits in the pool
+  `bash -n /pool/tests/test.sh` # sanity-check the edited test script
   `cd /pool && git add -A && git commit -m "[{task_id} iter-{iteration}] <attack_class>: <one-line summary>"`
   `git push origin main`
 
@@ -346,7 +347,7 @@ looked. Your last-seen pool commit was `{last_seen_short}`. New commits:
 {pool_log}
 ```
 
-Inspect the full diff: `cd /pool && git diff {last_seen_short}..HEAD`.
+Inspect the full diff, eg: `cd /pool && git log --oneline {last_seen_short}..HEAD && git diff {last_seen_short}..HEAD`.
 
 Some of those commits may be yours (you pushed them in a prior iteration) and
 some may be from other tasks. Decide how to react:
@@ -354,13 +355,10 @@ some may be from other tasks. Decide how to react:
 - **Do nothing.** If the pool advance doesn't affect this task (e.g., the new
   commits are your own, or are about unrelated files / attack classes), it is
   completely fine to make zero changes this iteration. Don't fabricate work.
-- **Port into local.** If the pool's new defenses apply here cleanly, copy the
-  relevant files into `/logs/artifacts/tests/` and commit locally.
-  `cp /pool/tests/eval_kernel.py /logs/artifacts/tests/eval_kernel.py`
-  `cd /logs/artifacts && git add -A && git commit -m 'sync from pool'`
-- **Refine pool further.** If porting reveals a gap specific to this task, patch
-  `/pool/` further and push a new commit, then also port it locally.
-
+- **Port ideas (not the files directly) into local.** If new fixes from other tasks
+    apply here, implement equivalent fixes in `/logs/artifacts/tests/` and/or
+    `/logs/artifacts/environment/`, then commit locally.
+- **Make sure you check if the fix already exists in the local artifacts.**
 Doing nothing when nothing is needed is a valid and preferred outcome.
 """
 
