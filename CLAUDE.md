@@ -119,7 +119,7 @@ python -m harden --oracle --all --hacker-privileged \
 - `--no-legitimate-marker` — disable the `.legitimate` sentinel (fixer can't flag a hack as legitimate).
 - `--hack-threshold`, `--solver-threshold` — gates on reward/speedup.
 - `--harbor-config` — yaml/json Harbor JobConfig defaults to layer under harden overrides.
-- `--force-build`, `--image-name` — rebuild control to avoid cache pollution from Dockerfile mutations across iterations.
+- `--force-build`, `--image-name` — rebuild control to avoid cache pollution from Dockerfile mutations across iterations. `--image-name` accepts a `{task_id}` placeholder for batch / parallel-process disambiguation (e.g., `--image-name kb-priv-pool-{task_id}` so concurrent harden runs over the same tasks tag-clobber-proof their images).
 - `--solver-privileged` (solver mode) — inject `/solution/` into solver env as hint.
 - `--hacker-privileged` — mount the evaluation environment (tests/, environment/) read-only at `/eval_env/` so the hacker can whitebox-inspect the verifier.
 - `--hacker-feedback` — give hacker read-only access to previous failed attempts.

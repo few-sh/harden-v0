@@ -118,6 +118,13 @@ async def _run_targeted_replay(
     return best
 
 
+def _resolve_image_name(cfg: HardenConfig) -> str | None:
+    """Return cfg.image_name with {task_id} substituted, or None if unset."""
+    if not cfg.image_name:
+        return None
+    return cfg.image_name.format(task_id=cfg.task_id)
+
+
 async def _run_solver(
     cfg: HardenConfig,
     task_parent: Path,
@@ -126,6 +133,7 @@ async def _run_solver(
     image_name: str | None,
 ) -> tuple[float, Path]:
     """Dispatch pre-check / validation to oracle or solver agent based on cfg.oracle."""
+    fallback = _resolve_image_name(cfg)
     if cfg.oracle:
         return await run_oracle_solver(
             task_parent,
@@ -134,7 +142,7 @@ async def _run_solver(
             timeout_multiplier=cfg.solver_timeout_multiplier,
             harbor_config=cfg.harbor_config,
             force_build=force_build or cfg.force_build,
-            image_name=image_name or cfg.image_name,
+            image_name=image_name or fallback,
         )
     return await run_solver_agent(
         task_parent,
@@ -148,7 +156,7 @@ async def _run_solver(
         timeout_multiplier=cfg.solver_timeout_multiplier,
         harbor_config=cfg.harbor_config,
         force_build=force_build or cfg.force_build,
-        image_name=image_name or cfg.image_name,
+        image_name=image_name or fallback,
     )
 
 
@@ -217,7 +225,12 @@ async def _harden_task_phases(
     hardened_task_dir = hardened_parent / config.task_id
 
     # Separate image name for harden runs so we don't clobber the base image.
-    harden_image = config.image_name or f"{config.task_id}-harden"
+    # If image_name contains "{task_id}", substitute it so parallel runs over the
+    # same tasks get disjoint image-tag namespaces (e.g. "kb-priv-pool-{task_id}").
+    if config.image_name:
+        harden_image = config.image_name.format(task_id=config.task_id)
+    else:
+        harden_image = f"{config.task_id}-harden"
 
     # Build solver/precheck working copy
     solver_parent = create_working_copy(hardened_task_dir, output / "solver_task")
@@ -402,7 +415,7 @@ async def _harden_task_phases(
                         timeout_multiplier=config.hacker_timeout_multiplier,
                         harbor_config=config.harbor_config,
                         force_build=hacker_needs_rebuild or config.force_build,
-                        image_name=harden_image if hacker_needs_rebuild else config.image_name,
+                        image_name=harden_image if hacker_needs_rebuild else _resolve_image_name(config),
                     )
                     if hack_reward >= config.hack_threshold:
                         hack_succeeded = True
