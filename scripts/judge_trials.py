@@ -121,31 +121,16 @@ class TrialJudgment:
 
 @dataclass(frozen=True)
 class FixerObservedTrace:
-    schema_version: str | None
-    session_id: str | None
-    agent_name: str | None
-    agent_version: str | None
-    model_name: str | None
     trajectory_path: str
     step_count: int
-    agent_step_count: int
-    user_step_count: int
-    bash_call_count: int
-    steps_with_observation_count: int
-    steps_with_metrics_count: int
-    steps_with_reasoning_count: int
     first_timestamp: str | None
     last_timestamp: str | None
     duration_seconds: float | None
-    final_total_prompt_tokens: int | None
-    final_total_completion_tokens: int | None
-    final_total_cached_tokens: int | None
-    final_total_cost_usd: float | None
     did_read_artifacts_tests: bool
     did_pool_sync_commands: bool
     did_write_files: bool
     did_run_tests: bool
-    did_git_status: bool
+    did_git_log: bool
     did_git_diff: bool
     did_git_add: bool
     did_git_commit: bool
@@ -337,41 +322,23 @@ def _extract_fixer_trace(trajectory_path: Path) -> FixerObservedTrace:
     command_blob = "\n".join(bash_keystrokes)
     observation_text = _extract_observation_text(steps)
 
-    final_metrics = trajectory.get("final_metrics") if isinstance(trajectory.get("final_metrics"), dict) else {}
-    agent = trajectory.get("agent") if isinstance(trajectory.get("agent"), dict) else {}
-
     return FixerObservedTrace(
-        schema_version=trajectory.get("schema_version") if isinstance(trajectory.get("schema_version"), str) else None,
-        session_id=trajectory.get("session_id") if isinstance(trajectory.get("session_id"), str) else None,
-        agent_name=agent.get("name") if isinstance(agent.get("name"), str) else None,
-        agent_version=agent.get("version") if isinstance(agent.get("version"), str) else None,
-        model_name=agent.get("model_name") if isinstance(agent.get("model_name"), str) else None,
         trajectory_path=str(trajectory_path),
         step_count=len(steps),
-        agent_step_count=sum(1 for s in steps if s.get("source") == "agent"),
-        user_step_count=sum(1 for s in steps if s.get("source") == "user"),
-        bash_call_count=len(bash_keystrokes),
-        steps_with_observation_count=sum(1 for s in steps if s.get("observation") is not None),
-        steps_with_metrics_count=sum(1 for s in steps if s.get("metrics") is not None),
-        steps_with_reasoning_count=sum(1 for s in steps if s.get("reasoning_content") not in (None, "")),
         first_timestamp=first_ts,
         last_timestamp=last_ts,
         duration_seconds=duration_seconds,
-        final_total_prompt_tokens=_to_int(final_metrics.get("total_prompt_tokens")),
-        final_total_completion_tokens=_to_int(final_metrics.get("total_completion_tokens")),
-        final_total_cached_tokens=_to_int(final_metrics.get("total_cached_tokens")),
-        final_total_cost_usd=_to_float(final_metrics.get("total_cost_usd")),
         did_read_artifacts_tests=bool(
             re.search(r"/logs/artifacts/tests/test_outputs\.py|/logs/artifacts/tests/test\.sh", command_blob)
         ),
-        did_pool_sync_commands=bool(re.search(r"cd\s+/pool|git\s+pull|git\s+log|git\s+show", command_blob)),
+        did_pool_sync_commands=bool(re.search(r"cd\s+/pool|git\s+pull|git\s+show", command_blob)),
         did_write_files=bool(
             re.search(r"cat\s+<<|cat\s+>|cat\s+>>|tee\s+|sed\s+-i|perl\s+-pi|python3?\s+-c", command_blob)
         ),
         did_run_tests=bool(
             re.search(r"pytest|uv\s+run\s+pytest|bash\s+/tests/test\.sh|/logs/verifier/reward\.txt", command_blob)
         ),
-        did_git_status=bool(re.search(r"git\s+status", command_blob)),
+        did_git_log=bool(re.search(r"git\s+log", command_blob)),
         did_git_diff=bool(re.search(r"git\s+diff", command_blob)),
         did_git_add=bool(re.search(r"git\s+add\s+", command_blob)),
         did_git_commit=bool(re.search(r"git\s+commit\s+", command_blob)),
