@@ -3,11 +3,6 @@
 
 This script scans a batch run directory, finds attacker trial artifacts,
 judges each trial using the harden-2 rubric, and writes per-task outputs.
-
-LEGACY — kept for reference only. Depends on `prompts/judge_rubric.txt`
-which is not committed to this repo, so the script will fail at startup
-with FileNotFoundError. If you need a working judge, port the rubric over
-or use the in-tree dedup/hodoscope tooling.
 """
 
 from __future__ import annotations
@@ -88,14 +83,11 @@ def _load_judge_rubric() -> str:
         return _DEFAULT_RUBRIC_PATH.read_text()
     raise FileNotFoundError(
         f"Could not find judge rubric at {_DEFAULT_RUBRIC_PATH}. "
-        "This script is legacy: prompts/judge_rubric.txt is not committed "
-        "to this repo. Port the rubric over or remove this script."
+        "Expected prompts/judge_rubric.txt adjacent to harden-v0."
     )
 
 
-# Deferred to main() so importing this legacy module doesn't crash —
-# the rubric file isn't shipped with the repo.
-JUDGE_RUBRIC: str = ""
+JUDGE_RUBRIC = _load_judge_rubric()
 
 
 @dataclass(frozen=True)
@@ -841,9 +833,6 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
-    global JUDGE_RUBRIC
-    JUDGE_RUBRIC = _load_judge_rubric()
-
     args = parse_args()
     run_dir = args.trial_dir.resolve()
     if not run_dir.is_dir():
