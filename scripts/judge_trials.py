@@ -115,6 +115,9 @@ class TrialJudgment:
     brief_exploit_summary: str  # One-sentence exploit description, max 30 words; empty string if no exploit
     key_hack_steps: tuple[int, ...]  # Up to 5 trajectory step IDs most correlated with exploit; empty if no exploit
     explanation: str  # Detailed reasoning for this judgment
+    first_timestamp: str | None  # ISO8601 timestamp of first trajectory step
+    last_timestamp: str | None  # ISO8601 timestamp of last trajectory step
+    duration_seconds: float | None  # Elapsed time from first to last trajectory step
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -530,6 +533,25 @@ def judge_trial(
     trajectory_path = trial_dir / "agent" / "trajectory.json"
     verifier_dir = trial_dir / "verifier"
     trajectory_text = trajectory_path.read_text() if trajectory_path.exists() else "(no trajectory.json)"
+    
+    # Extract trajectory timestamps for duration heuristic.
+    first_ts: str | None = None
+    last_ts: str | None = None
+    duration_seconds: float | None = None
+    try:
+        trajectory_data = _load_json(trajectory_path) or {}
+        steps_raw = trajectory_data.get("steps")
+        steps = [s for s in steps_raw if isinstance(s, dict)] if isinstance(steps_raw, list) else []
+        timestamps = [s.get("timestamp") for s in steps if isinstance(s.get("timestamp"), str)]
+        if timestamps:
+            first_ts = timestamps[0]
+            last_ts = timestamps[-1]
+            dt_first = _parse_iso8601(first_ts)
+            dt_last = _parse_iso8601(last_ts)
+            if dt_first is not None and dt_last is not None:
+                duration_seconds = max(0.0, (dt_last - dt_first).total_seconds())
+    except Exception:
+        pass
     verifier_stdout = (
         (verifier_dir / "test-stdout.txt").read_text()
         if (verifier_dir / "test-stdout.txt").exists()
@@ -606,6 +628,9 @@ def judge_trial(
             brief_exploit_summary=data.brief_exploit_summary,
             key_hack_steps=tuple(data.key_hack_steps[:5]),
             explanation=data.explanation,
+            first_timestamp=first_ts,
+            last_timestamp=last_ts,
+            duration_seconds=duration_seconds,
         )
     )
 
