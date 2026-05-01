@@ -368,6 +368,21 @@ def prepare_fixer_environment(
             "fi\n"
         )
 
+    # If the original Dockerfile declared its own ENTRYPOINT (with args), we'd
+    # silently overwrite it below — `exec "$@"` only preserves CMD. Warn loudly
+    # so a task with a custom entrypoint doesn't get silently broken.
+    original_dockerfile_text = dockerfile.read_text()
+    for raw in original_dockerfile_text.splitlines():
+        line = raw.strip()
+        if line.upper().startswith("ENTRYPOINT"):
+            logger.warning(
+                "Task %s: original Dockerfile has ENTRYPOINT (%s); harden's "
+                "entrypoint will replace it. Original CMD is preserved via "
+                "exec \"$@\", but ENTRYPOINT args are lost.",
+                task_id, line,
+            )
+            break
+
     entrypoint_script = env_dir / "harden-entrypoint.sh"
     entrypoint_script.write_text(
         "#!/bin/sh\n"

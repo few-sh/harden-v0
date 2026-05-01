@@ -223,6 +223,26 @@ def main(argv: list[str] | None = None) -> None:
     logging.getLogger().addHandler(file_handler)
 
     logging.info("Output directory: %s", args.output_dir.resolve())
+    if args.resume:
+        banner = "*" * 72
+        logging.warning(banner)
+        logging.warning(
+            "RESUME MODE — output dir already exists at %s",
+            args.output_dir.resolve(),
+        )
+        logging.warning(
+            "  - completed tasks (terminal status, matching mode flags) will be SKIPPED"
+        )
+        logging.warning(
+            "  - in-progress tasks will continue from their last persisted iteration"
+        )
+        logging.warning(
+            "  - existing hardened/ state is PRESERVED (not reset to original)"
+        )
+        logging.warning(
+            "If this is unintended, Ctrl-C now and pass a fresh --output-dir."
+        )
+        logging.warning(banner)
 
     if args.task_id:
         _run_single(args)

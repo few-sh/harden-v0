@@ -619,6 +619,14 @@ async def _harden_task_phases(
             logger.warning("Fixer produced invalid artifacts: %s", e)
             previous_failure = str(e)
             legitimate_streak = 0
+            # NOTE: deliberately not touching previous_fixer_trial /
+            # previous_solver_trial here. The next iter relies on the
+            # `previous_failure` string (e.g. SyntaxError msg) for retry context;
+            # leaving any prior trial dirs as-is is fine because they're stale
+            # (point to N-2's run) but the failure message is the primary signal.
+            # Trade-off: in the SyntaxError case we lose the ability to show the
+            # fixer their just-broken file via /previous_attempt/ — accept that
+            # for now since the error message is usually enough.
 
         yield  # ── iteration fence: after validate+replay (pool writes done) ─
 

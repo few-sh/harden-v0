@@ -24,9 +24,15 @@ HACK_THRESHOLD = 10.0
 
 def get_job_status(job_dir):
     """Return (completed, reward) for a job directory."""
-    for d in sorted(job_dir.iterdir()):
-        if not d.is_dir():
-            continue
+    # Sort by mtime descending — trial dirs have UUID suffixes so alphabetic
+    # order is essentially random. Match agent.py's `_run_agent` which also
+    # picks the newest trial.
+    trial_dirs = sorted(
+        (d for d in job_dir.iterdir() if d.is_dir()),
+        key=lambda d: d.stat().st_mtime,
+        reverse=True,
+    )
+    for d in trial_dirs:
         rp = d / "result.json"
         if rp.exists():
             try:

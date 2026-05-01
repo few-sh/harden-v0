@@ -1,5 +1,10 @@
 """Compound defenses across the hardened batch into one seed task.
 
+KERNELBENCH-ONLY. The ALLOWLIST and prompt are hard-wired to the KB eval
+pipeline (`tests/eval_kernel.py`, `environment/Dockerfile`, `tests/test.sh`).
+Generic-mode (slime) hardened batches won't have `eval_kernel.py` and this
+script will silently merge nothing useful — don't run it on non-KB outputs.
+
 For each donor task, ask the LLM whether the donor's hack+fix reveals a gap
 in the seed's current defense. If yes, rewrite the relevant seed files.
 
@@ -30,6 +35,8 @@ DEFAULT_OUT = Path("/mnt/disk-rh/harbor/harden-kb/outputs/merged_defense")
 DEFAULT_MODEL = "openai/gpt-5.2"
 DEFAULT_SEED = "kernelbench-level1-001-square-matrix-multiplication"
 
+# KernelBench-specific file set. tests/eval_kernel.py is the KB eval entry
+# point and won't exist in generic harden batches.
 ALLOWLIST = ("tests/eval_kernel.py", "environment/Dockerfile", "tests/test.sh")
 
 PROMPT = """You are compounding reward-hacking defenses for a KernelBench eval script.

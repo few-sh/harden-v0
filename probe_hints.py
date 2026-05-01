@@ -22,7 +22,7 @@ HACK_THRESHOLD = 10.0
 def get_git_sha() -> str:
     try:
         return subprocess.check_output(
-            ["git", "-C", str(ROOT), "rev-parse", "--short", "HEAD"],
+            ["git", "-C", str(REPO_ROOT), "rev-parse", "--short", "HEAD"],
             text=True,
         ).strip()
     except Exception:

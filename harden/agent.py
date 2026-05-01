@@ -11,8 +11,8 @@ are essential for solver mode — the fixer mutates the task Dockerfile across i
 without rebuild control + distinct image names, cache pollution silently reuses the pre-fix image.
 """
 
-import asyncio
 import logging
+import subprocess
 from datetime import datetime
 from pathlib import Path
 from uuid import uuid4
@@ -39,21 +39,26 @@ DEFAULT_REASONING_EFFORT = "high"
 _HOOK_SCRIPT = Path(__file__).resolve().parent.parent / "hook_scripts" / "hooks.sh"
 
 
-async def _fire_job_finished_hook(job_path: Path) -> None:
+def _fire_job_finished_hook(job_path: Path) -> None:
     """Launch hook_scripts/hooks.sh in the background with the absolute job path.
 
-    Uses asyncio so the child is registered with the event loop's watcher and
-    reaped, rather than leaking as a zombie. The hook itself redirects its
-    own stdout/stderr to ``<job_dir>/hooks.log`` (see hook_scripts/hooks.sh).
-    Failures are logged and swallowed so a broken hook never breaks the harden run.
+    Fire-and-forget via subprocess.Popen + start_new_session=True. The hook
+    redirects its own stdout/stderr to ``<job_dir>/hooks.log`` (see
+    hook_scripts/hooks.sh) so we can DEVNULL the parent fds. The new session
+    detaches the child so the OS reaps it; we don't need asyncio integration
+    since nothing awaits the result. Failures are logged and swallowed so a
+    broken hook never breaks the harden run.
     """
     if not _HOOK_SCRIPT.is_file():
         return
     try:
-        await asyncio.create_subprocess_exec(
-            str(_HOOK_SCRIPT),
-            str(job_path.resolve()),
+        subprocess.Popen(
+            [str(_HOOK_SCRIPT), str(job_path.resolve())],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL,
             start_new_session=True,
+            close_fds=True,
         )
     except OSError as e:
         logger.warning("Failed to launch job-finished hook %s: %s", _HOOK_SCRIPT, e)
@@ -278,7 +283,7 @@ async def _run_agent(
     trial_result = TrialResult.model_validate_json(result_path.read_text())
     reward = _extract_reward(trial_result)
     logger.info("[%s] Completed: reward=%.2f, trial_dir=%s", role, reward, trial_dir)
-    await _fire_job_finished_hook(trial_dir)
+    _fire_job_finished_hook(trial_dir)
     return reward, trial_dir
 
 
