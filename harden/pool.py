@@ -360,18 +360,22 @@ class PoolCursor:
         self._task_id = task_id
         # Reads `pool_sha.txt` if present, else None.
         #
-        # The "fresh task = None" case makes iter 0 always report a pool
-        # advance, so the fixer ports the existing pool history into local
-        # before any attack. That's the right default for single-task /
-        # standalone runs of `harden_task`.
+        # In single-task `harden_task` runs with --pool-enabled, no pre-seeding
+        # happens upstream, so the cursor starts at None. Iter 0 then reports
+        # a pool advance and the task skips ahead — the fixer ports the
+        # existing pool history into local /logs/artifacts/ before any attack.
+        # That's intentional for single-task: there's no sibling task to share
+        # incremental defenses with, so the only useful pool interaction is to
+        # inherit whatever's already there.
         #
-        # `harden_batch` has a different default: it pre-seeds fresh tasks'
-        # `pool_sha.txt` to the current pool HEAD (so iter 0 sees no advance
-        # and the hacker runs immediately). The bootstrap is typically the
-        # source task's tests/, including a task-specific reference.py that
-        # would corrupt sibling tasks if integrated. The batch flag
-        # `--pool-integrate-bootstrap` flips this off, falling back to the
-        # standalone default above.
+        # `harden_batch` pre-seeds fresh tasks' `pool_sha.txt` to the current
+        # pool HEAD so iter 0 sees no advance and the hacker runs immediately.
+        # The bootstrap is typically some other task's tests/ tree — including
+        # its task-specific reference.py — which would corrupt sibling tasks'
+        # correctness checks if integrated wholesale. Pass
+        # --pool-integrate-bootstrap to skip the pre-seed and behave like the
+        # single-task default above (only do this when the bootstrap is a
+        # genuinely task-agnostic defense scaffold).
         self._sha: str | None = read_last_seen_sha(task_output_dir)
 
     @property
