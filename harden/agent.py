@@ -64,10 +64,29 @@ def _fire_job_finished_hook(job_path: Path) -> None:
         logger.warning("Failed to launch job-finished hook %s: %s", _HOOK_SCRIPT, e)
 
 
-def _extract_reward(trial_result: TrialResult) -> float:
-    if trial_result.verifier_result and trial_result.verifier_result.rewards:
-        return trial_result.verifier_result.rewards.get("reward", 0.0)
-    return 0.0
+def _extract_reward(trial_result: TrialResult, kernelbench_mode: bool = False) -> float:
+    """Read the reward from a trial's verifier output.
+
+    With `kernelbench_mode`, also sanity-check the KB-specific sidecar fields.
+    Fixers can ship a patched `eval_kernel.py` that fails to measure the
+    baseline (sentinel `ref_runtime_us = -1.0`) and falls back to
+    `speedup = 1.0`, which silently passes solver-validate and hides real
+    hacks. Treat any sentinel/non-positive timing as a broken eval and
+    return 0.0 so the loop rejects the fix.
+    """
+    if not trial_result.verifier_result or not trial_result.verifier_result.rewards:
+        return 0.0
+    rewards = trial_result.verifier_result.rewards
+    if kernelbench_mode:
+        for key in ("runtime_us", "ref_runtime_us"):
+            value = rewards.get(key)
+            if value is not None and value <= 0:
+                logger.warning(
+                    "KB sentinel detected in verifier output: %s=%s — treating as broken eval (reward → 0).",
+                    key, value,
+                )
+                return 0.0
+    return rewards.get("reward", 0.0)
 
 
 async def run_hacker(
@@ -83,6 +102,7 @@ async def run_hacker(
     harbor_config: Path | None = None,
     force_build: bool = False,
     image_name: str | None = None,
+    kernelbench_mode: bool = False,
 ) -> tuple[float, Path]:
     """Run a Terminus-2 hacker agent. Collects /solution for exploit inspection."""
     return await _run_agent(
@@ -101,6 +121,7 @@ async def run_hacker(
         harbor_config=harbor_config,
         force_build=force_build,
         image_name=image_name,
+        kernelbench_mode=kernelbench_mode,
     )
 
 
@@ -112,6 +133,7 @@ async def run_oracle_solver(
     harbor_config: Path | None = None,
     force_build: bool = False,
     image_name: str | None = None,
+    kernelbench_mode: bool = False,
 ) -> tuple[float, Path]:
     """Run the oracle solver (copies reference.py → solution.py via solve.sh)."""
     return await _run_agent(
@@ -124,6 +146,7 @@ async def run_oracle_solver(
         harbor_config=harbor_config,
         force_build=force_build,
         image_name=image_name,
+        kernelbench_mode=kernelbench_mode,
     )
 
 
@@ -140,6 +163,7 @@ async def run_solver_agent(
     harbor_config: Path | None = None,
     force_build: bool = False,
     image_name: str | None = None,
+    kernelbench_mode: bool = False,
 ) -> tuple[float, Path]:
     """Run a Terminus-2 solver agent (used as pre-check when cfg.oracle=False).
 
@@ -162,6 +186,7 @@ async def run_solver_agent(
         harbor_config=harbor_config,
         force_build=force_build,
         image_name=image_name,
+        kernelbench_mode=kernelbench_mode,
     )
 
 
@@ -228,6 +253,7 @@ async def _run_agent(
     harbor_config: Path | None = None,
     force_build: bool = False,
     image_name: str | None = None,
+    kernelbench_mode: bool = False,
 ) -> tuple[float, Path]:
     job_name = f"{role}__{datetime.now().strftime('%Y%m%d_%H%M%S')}__{uuid4().hex[:8]}"
 
@@ -281,7 +307,7 @@ async def _run_agent(
         raise RuntimeError(f"[{role}] No result.json in {trial_dir}")
 
     trial_result = TrialResult.model_validate_json(result_path.read_text())
-    reward = _extract_reward(trial_result)
+    reward = _extract_reward(trial_result, kernelbench_mode=kernelbench_mode)
     logger.info("[%s] Completed: reward=%.2f, trial_dir=%s", role, reward, trial_dir)
     _fire_job_finished_hook(trial_dir)
     return reward, trial_dir

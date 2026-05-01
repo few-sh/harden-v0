@@ -109,6 +109,7 @@ async def _run_targeted_replay(
             # Rebuild to discard solver's possibly-privileged image.
             force_build=True,
             image_name=harden_image,
+            kernelbench_mode=cfg.kernelbench_mode,
         )
         best = max(best, reward)
         logger.info("Replay %d/%d: reward=%.2f (threshold=%.2f).",
@@ -143,6 +144,7 @@ async def _run_solver(
             harbor_config=cfg.harbor_config,
             force_build=force_build or cfg.force_build,
             image_name=image_name or fallback,
+            kernelbench_mode=cfg.kernelbench_mode,
         )
     return await run_solver_agent(
         task_parent,
@@ -157,6 +159,7 @@ async def _run_solver(
         harbor_config=cfg.harbor_config,
         force_build=force_build or cfg.force_build,
         image_name=image_name or fallback,
+        kernelbench_mode=cfg.kernelbench_mode,
     )
 
 
@@ -416,6 +419,7 @@ async def _harden_task_phases(
                         harbor_config=config.harbor_config,
                         force_build=hacker_needs_rebuild or config.force_build,
                         image_name=harden_image if hacker_needs_rebuild else _resolve_image_name(config),
+                        kernelbench_mode=config.kernelbench_mode,
                     )
                     if hack_reward >= config.hack_threshold:
                         hack_succeeded = True
