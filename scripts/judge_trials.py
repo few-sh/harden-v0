@@ -119,6 +119,63 @@ class TrialJudgment:
         return asdict(self)
 
 
+@dataclass(frozen=True)
+class FixerObservedTrace:
+    schema_version: str | None
+    session_id: str | None
+    agent_name: str | None
+    agent_version: str | None
+    model_name: str | None
+    trajectory_path: str
+    step_count: int
+    agent_step_count: int
+    user_step_count: int
+    bash_call_count: int
+    steps_with_observation_count: int
+    steps_with_metrics_count: int
+    steps_with_reasoning_count: int
+    first_timestamp: str | None
+    last_timestamp: str | None
+    duration_seconds: float | None
+    final_total_prompt_tokens: int | None
+    final_total_completion_tokens: int | None
+    final_total_cached_tokens: int | None
+    final_total_cost_usd: float | None
+    did_read_artifacts_tests: bool
+    did_pool_sync_commands: bool
+    did_write_files: bool
+    did_run_tests: bool
+    did_git_status: bool
+    did_git_diff: bool
+    did_git_add: bool
+    did_git_commit: bool
+    did_git_push: bool
+    did_create_legitimate_marker: bool
+    observed_reward_values: tuple[float, ...]
+    observed_test_pass_token_count: int
+    observed_test_fail_token_count: int
+    observed_error_token_count: int
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class FixerIterationOutcome:
+    iteration: int | None
+    loop_outcome: str | None
+    hack_reward_in: float | None
+    fix_applied: bool | None
+    replay_attempted: bool | None
+    replay_reward: float | None
+    pool_advanced: bool | None
+    pool_sha_start: str | None
+    pool_sync_forced_hack: bool | None
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
 def _normalize_judgment(judgment: TrialJudgment) -> TrialJudgment:
     legitimate_solve = judgment.legitimate_solve
     hack_success = judgment.hack_success
@@ -170,6 +227,216 @@ def _read_reward(trial_dir: Path) -> float:
     return 0.0
 
 
+def _to_float(value: Any) -> float | None:
+    if isinstance(value, (int, float)):
+        return float(value)
+    return None
+
+
+def _to_int(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    return None
+
+
+def _parse_iso8601(ts: str | None) -> datetime | None:
+    if not ts:
+        return None
+    try:
+        normalized = ts.replace("Z", "+00:00")
+        return datetime.fromisoformat(normalized)
+    except Exception:
+        return None
+
+
+def _extract_bash_keystrokes(steps: list[dict[str, Any]]) -> list[str]:
+    out: list[str] = []
+    for step in steps:
+        tool_calls = step.get("tool_calls")
+        if not isinstance(tool_calls, list):
+            continue
+        for call in tool_calls:
+            if not isinstance(call, dict):
+                continue
+            if call.get("function_name") != "bash_command":
+                continue
+            args = call.get("arguments")
+            if not isinstance(args, dict):
+                continue
+            keystrokes = args.get("keystrokes")
+            if isinstance(keystrokes, str):
+                out.append(keystrokes)
+    return out
+
+
+def _extract_observation_text(steps: list[dict[str, Any]]) -> str:
+    chunks: list[str] = []
+    for step in steps:
+        observation = step.get("observation")
+        if not isinstance(observation, dict):
+            continue
+        results = observation.get("results")
+        if not isinstance(results, list):
+            continue
+        for result in results:
+            if not isinstance(result, dict):
+                continue
+            content = result.get("content")
+            if isinstance(content, str):
+                chunks.append(content)
+    return "\n".join(chunks)
+
+
+def _extract_observed_rewards(observation_text: str) -> tuple[float, ...]:
+    values: list[float] = []
+    # Prefer explicit reward lines and stand-alone numeric lines from reward.txt output.
+    for match in re.findall(r"reward\s*[:=]\s*(-?\d+(?:\.\d+)?)", observation_text, flags=re.IGNORECASE):
+        try:
+            values.append(float(match))
+        except Exception:
+            pass
+
+    for line in observation_text.splitlines():
+        s = line.strip()
+        if re.fullmatch(r"-?\d+(?:\.\d+)?", s):
+            try:
+                values.append(float(s))
+            except Exception:
+                pass
+
+    # De-duplicate while preserving order.
+    seen: set[float] = set()
+    out: list[float] = []
+    for v in values:
+        if v in seen:
+            continue
+        seen.add(v)
+        out.append(v)
+    return tuple(out)
+
+
+def _extract_fixer_trace(trajectory_path: Path) -> FixerObservedTrace:
+    trajectory = _load_json(trajectory_path) or {}
+    steps_raw = trajectory.get("steps")
+    steps = [s for s in steps_raw if isinstance(s, dict)] if isinstance(steps_raw, list) else []
+
+    timestamps = [s.get("timestamp") for s in steps if isinstance(s.get("timestamp"), str)]
+    first_ts = timestamps[0] if timestamps else None
+    last_ts = timestamps[-1] if timestamps else None
+    duration_seconds: float | None = None
+    dt_first = _parse_iso8601(first_ts)
+    dt_last = _parse_iso8601(last_ts)
+    if dt_first is not None and dt_last is not None:
+        duration_seconds = max(0.0, (dt_last - dt_first).total_seconds())
+
+    bash_keystrokes = _extract_bash_keystrokes(steps)
+    command_blob = "\n".join(bash_keystrokes)
+    observation_text = _extract_observation_text(steps)
+
+    final_metrics = trajectory.get("final_metrics") if isinstance(trajectory.get("final_metrics"), dict) else {}
+    agent = trajectory.get("agent") if isinstance(trajectory.get("agent"), dict) else {}
+
+    return FixerObservedTrace(
+        schema_version=trajectory.get("schema_version") if isinstance(trajectory.get("schema_version"), str) else None,
+        session_id=trajectory.get("session_id") if isinstance(trajectory.get("session_id"), str) else None,
+        agent_name=agent.get("name") if isinstance(agent.get("name"), str) else None,
+        agent_version=agent.get("version") if isinstance(agent.get("version"), str) else None,
+        model_name=agent.get("model_name") if isinstance(agent.get("model_name"), str) else None,
+        trajectory_path=str(trajectory_path),
+        step_count=len(steps),
+        agent_step_count=sum(1 for s in steps if s.get("source") == "agent"),
+        user_step_count=sum(1 for s in steps if s.get("source") == "user"),
+        bash_call_count=len(bash_keystrokes),
+        steps_with_observation_count=sum(1 for s in steps if s.get("observation") is not None),
+        steps_with_metrics_count=sum(1 for s in steps if s.get("metrics") is not None),
+        steps_with_reasoning_count=sum(1 for s in steps if s.get("reasoning_content") not in (None, "")),
+        first_timestamp=first_ts,
+        last_timestamp=last_ts,
+        duration_seconds=duration_seconds,
+        final_total_prompt_tokens=_to_int(final_metrics.get("total_prompt_tokens")),
+        final_total_completion_tokens=_to_int(final_metrics.get("total_completion_tokens")),
+        final_total_cached_tokens=_to_int(final_metrics.get("total_cached_tokens")),
+        final_total_cost_usd=_to_float(final_metrics.get("total_cost_usd")),
+        did_read_artifacts_tests=bool(
+            re.search(r"/logs/artifacts/tests/test_outputs\.py|/logs/artifacts/tests/test\.sh", command_blob)
+        ),
+        did_pool_sync_commands=bool(re.search(r"cd\s+/pool|git\s+pull|git\s+log|git\s+show", command_blob)),
+        did_write_files=bool(
+            re.search(r"cat\s+<<|cat\s+>|cat\s+>>|tee\s+|sed\s+-i|perl\s+-pi|python3?\s+-c", command_blob)
+        ),
+        did_run_tests=bool(
+            re.search(r"pytest|uv\s+run\s+pytest|bash\s+/tests/test\.sh|/logs/verifier/reward\.txt", command_blob)
+        ),
+        did_git_status=bool(re.search(r"git\s+status", command_blob)),
+        did_git_diff=bool(re.search(r"git\s+diff", command_blob)),
+        did_git_add=bool(re.search(r"git\s+add\s+", command_blob)),
+        did_git_commit=bool(re.search(r"git\s+commit\s+", command_blob)),
+        did_git_push=bool(re.search(r"git\s+push", command_blob)),
+        did_create_legitimate_marker=bool(re.search(r"\.legitimate", command_blob)),
+        observed_reward_values=_extract_observed_rewards(observation_text),
+        observed_test_pass_token_count=len(re.findall(r"\b(pass|passed|success)\b", observation_text, flags=re.IGNORECASE)),
+        observed_test_fail_token_count=len(re.findall(r"\b(fail|failed|failing|assertionerror)\b", observation_text, flags=re.IGNORECASE)),
+        observed_error_token_count=len(re.findall(r"\b(error|exception|traceback)\b", observation_text, flags=re.IGNORECASE)),
+    )
+
+
+def _detect_fixer_iteration(job_name: str) -> int | None:
+    m = re.match(r"^fixer_iter(\d+)__", job_name)
+    if m:
+        return int(m.group(1))
+    return None
+
+
+def _load_iteration_outcomes(task_dir: Path) -> dict[int, dict[str, Any]]:
+    task_result = _load_json(task_dir / "result.json") or {}
+    records = task_result.get("iterations")
+    out: dict[int, dict[str, Any]] = {}
+    if not isinstance(records, list):
+        return out
+    for record in records:
+        if not isinstance(record, dict):
+            continue
+        iteration = record.get("iteration")
+        if isinstance(iteration, int):
+            out[iteration] = record
+    return out
+
+
+def _build_fixer_iteration_outcome(iteration: int | None, record: dict[str, Any] | None) -> FixerIterationOutcome:
+    if not record:
+        return FixerIterationOutcome(
+            iteration=iteration,
+            loop_outcome=None,
+            hack_reward_in=None,
+            fix_applied=None,
+            replay_attempted=None,
+            replay_reward=None,
+            pool_advanced=None,
+            pool_sha_start=None,
+            pool_sync_forced_hack=None,
+        )
+
+    return FixerIterationOutcome(
+        iteration=iteration,
+        loop_outcome=record.get("outcome") if isinstance(record.get("outcome"), str) else None,
+        hack_reward_in=_to_float(record.get("hack_reward")),
+        fix_applied=record.get("fix_applied") if isinstance(record.get("fix_applied"), bool) else None,
+        replay_attempted=record.get("replay_attempted") if isinstance(record.get("replay_attempted"), bool) else None,
+        replay_reward=_to_float(record.get("replay_reward")),
+        pool_advanced=record.get("pool_advanced") if isinstance(record.get("pool_advanced"), bool) else None,
+        pool_sha_start=record.get("pool_sha_start") if isinstance(record.get("pool_sha_start"), str) else None,
+        pool_sync_forced_hack=(
+            record.get("pool_sync_forced_hack")
+            if isinstance(record.get("pool_sync_forced_hack"), bool)
+            else None
+        ),
+    )
+
+
 def _infer_task_ids(run_dir: Path) -> list[str]:
     cfg = _load_json(run_dir / "batch_config.json") or {}
     ids = cfg.get("task_ids")
@@ -218,6 +485,18 @@ def _job_sort_key(job_name: str) -> tuple[int, int, int, str, str]:
         return (1, 0, 0, m.group(1), job_name)
 
     return (2, 0, 0, "", job_name)
+
+
+def _fixer_job_sort_key(job_name: str) -> tuple[int, int, str, str]:
+    m = re.match(r"^fixer_iter(\d+)__(\d{8}_\d{6})__", job_name)
+    if m:
+        return (0, int(m.group(1)), m.group(2), job_name)
+
+    m = re.match(r"^fixer_live__(\d{8}_\d{6})__", job_name)
+    if m:
+        return (1, 0, m.group(1), job_name)
+
+    return (2, 0, "", job_name)
 
 
 def judge_trial(
@@ -352,7 +631,7 @@ def _collect_attacker_trials(task_dir: Path) -> list[tuple[Path, Path, AttackerM
     if not jobs_dir.is_dir():
         return []
 
-    discovered: list[tuple[Path, Path, AttackerModeName, float]] = []
+    discovered: list[tuple[Path, Path, AttackerModeName]] = []
     for job_dir in sorted([p for p in jobs_dir.iterdir() if p.is_dir()], key=lambda p: _job_sort_key(p.name)):
         mode = _detect_mode(job_dir.name)
         if mode is None:
@@ -371,6 +650,23 @@ def _collect_attacker_trials(task_dir: Path) -> list[tuple[Path, Path, AttackerM
     return discovered
 
 
+def _collect_fixer_trials(task_dir: Path) -> list[tuple[Path, Path, int | None]]:
+    jobs_dir = task_dir / "jobs"
+    if not jobs_dir.is_dir():
+        return []
+
+    discovered: list[tuple[Path, Path, int | None]] = []
+    for job_dir in sorted([p for p in jobs_dir.iterdir() if p.is_dir()], key=lambda p: _fixer_job_sort_key(p.name)):
+        if not (job_dir.name.startswith("fixer_iter") or job_dir.name.startswith("fixer_live")):
+            continue
+        iteration = _detect_fixer_iteration(job_dir.name)
+        for trial_dir in _iter_trial_dirs(job_dir):
+            if not (trial_dir / "result.json").exists():
+                continue
+            discovered.append((job_dir, trial_dir, iteration))
+    return discovered
+
+
 def _process_task(run_dir: Path, task_id: str) -> dict[str, Any]:
     task_dir = run_dir / task_id
     if not task_dir.is_dir():
@@ -381,7 +677,9 @@ def _process_task(run_dir: Path, task_id: str) -> dict[str, Any]:
         }
 
     judgments: list[dict[str, Any]] = []
+    fixer_judgments: list[dict[str, Any]] = []
     errors: list[dict[str, str]] = []
+    iteration_outcomes = _load_iteration_outcomes(task_dir)
 
     for job_dir, trial_dir, mode in _collect_attacker_trials(task_dir):
         try:
@@ -423,6 +721,44 @@ def _process_task(run_dir: Path, task_id: str) -> dict[str, Any]:
             )
             print(f"[{task_id}] ERROR {job_dir.name}/{trial_dir.name}: {exc}")
 
+    for job_dir, trial_dir, iteration in _collect_fixer_trials(task_dir):
+        try:
+            trace = _extract_fixer_trace(trial_dir / "agent" / "trajectory.json")
+            outcome = _build_fixer_iteration_outcome(iteration, iteration_outcomes.get(iteration) if iteration is not None else None)
+            trial_result = _load_json(trial_dir / "result.json") or {}
+            fixer_judgments.append(
+                {
+                    "job_name": job_dir.name,
+                    "trial_name": trial_dir.name,
+                    "trial_dir": str(trial_dir),
+                    "role": "fixer",
+                    "iteration": iteration,
+                    "trial_reward": _to_float(
+                        ((trial_result.get("verifier_result") or {}).get("rewards") or {}).get("reward")
+                    ),
+                    "exception_type": (
+                        (trial_result.get("exception_info") or {}).get("exception_type")
+                        if isinstance(trial_result.get("exception_info"), dict)
+                        else None
+                    ),
+                    "fixer_trace": trace.to_dict(),
+                    "iteration_outcome": outcome.to_dict(),
+                }
+            )
+            print(
+                f"[{task_id}] indexed fixer {job_dir.name}/{trial_dir.name}: "
+                f"iteration={iteration} outcome={outcome.loop_outcome}"
+            )
+        except Exception as exc:
+            errors.append(
+                {
+                    "job_name": job_dir.name,
+                    "trial_name": trial_dir.name,
+                    "error": str(exc),
+                }
+            )
+            print(f"[{task_id}] ERROR indexing fixer {job_dir.name}/{trial_dir.name}: {exc}")
+
     payload = {
         "task_id": task_id,
         "run_dir": str(run_dir),
@@ -433,12 +769,24 @@ def _process_task(run_dir: Path, task_id: str) -> dict[str, Any]:
     out_path = task_dir / "task_judgments.json"
     _write_json(out_path, payload)
 
+    fixer_payload = {
+        "task_id": task_id,
+        "run_dir": str(run_dir),
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "fixer_judgments": fixer_judgments,
+        "errors": errors,
+    }
+    fixer_out_path = task_dir / "fixer_judgments.json"
+    _write_json(fixer_out_path, fixer_payload)
+
     return {
         "task_id": task_id,
         "status": "ok",
         "judgments_written": len(judgments),
+        "fixer_judgments_written": len(fixer_judgments),
         "errors": len(errors),
         "output": str(out_path),
+        "fixer_output": str(fixer_out_path),
     }
 
 
