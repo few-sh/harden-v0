@@ -358,10 +358,20 @@ class PoolCursor:
         self._pool_server = pool_server
         self._task_output_dir = task_output_dir
         self._task_id = task_id
-        # Fresh tasks start with `None` (not the bootstrap SHA): iter 0 will
-        # then always report an advance and the fixer catches up to the
-        # seeded defense before the task attacks. On disk this is persisted
-        # as an empty file once the task has acknowledged its first iter.
+        # Reads `pool_sha.txt` if present, else None.
+        #
+        # The "fresh task = None" case makes iter 0 always report a pool
+        # advance, so the fixer ports the existing pool history into local
+        # before any attack. That's the right default for single-task /
+        # standalone runs of `harden_task`.
+        #
+        # `harden_batch` has a different default: it pre-seeds fresh tasks'
+        # `pool_sha.txt` to the current pool HEAD (so iter 0 sees no advance
+        # and the hacker runs immediately). The bootstrap is typically the
+        # source task's tests/, including a task-specific reference.py that
+        # would corrupt sibling tasks if integrated. The batch flag
+        # `--pool-integrate-bootstrap` flips this off, falling back to the
+        # standalone default above.
         self._sha: str | None = read_last_seen_sha(task_output_dir)
 
     @property

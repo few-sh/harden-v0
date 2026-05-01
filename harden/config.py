@@ -92,6 +92,14 @@ class HardenConfig:
     # of pool state. Pool-sync iterations never count toward max_iterations,
     # (so this also bounds the overhead between real hack iterations.)
     pool_max_consecutive_syncs: int = 1
+    # When True, fresh tasks in batch mode start with cursor=None (the PoolCursor
+    # default), so iter 0 reports a pool advance and the fixer is asked to port
+    # the existing pool history into local /logs/artifacts/. Default False —
+    # the bootstrap is typically the source task's tests/ tree, including a
+    # task-specific reference.py that would corrupt sibling tasks' correctness
+    # checks if integrated. Only flip this on if pool_bootstrap_dir contains a
+    # task-agnostic defense scaffold.
+    pool_integrate_bootstrap: bool = False
 
     # If True, preserve an existing output/hardened/<task>/ from a prior run.
     resume: bool = False

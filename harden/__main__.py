@@ -129,6 +129,13 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--pool-max-consecutive-syncs", type=int, default=1,
                         help="Force the hacker after this many consecutive pool-sync skips (default: 1). "
                              "Pool-sync iterations never count toward --max-iterations.")
+    parser.add_argument("--pool-integrate-bootstrap", action="store_true",
+                        help="Make iter 0 a skip-hacker pool-sync iteration so the fixer "
+                             "ports the bootstrap pool history into local /logs/artifacts/ "
+                             "before any attack. Default off: bootstrap typically contains "
+                             "task-specific files (e.g. KernelBench reference.py) that would "
+                             "corrupt sibling tasks. Only enable when --pool-bootstrap-dir "
+                             "is a task-agnostic defense scaffold.")
 
     # Batch-only
     parser.add_argument("--max-concurrent", type=int, default=4,
@@ -182,6 +189,7 @@ def _config_kwargs(args: argparse.Namespace) -> dict:
         pool_bootstrap_dir=args.pool_bootstrap_dir,
         pool_port=args.pool_port,
         pool_max_consecutive_syncs=args.pool_max_consecutive_syncs,
+        pool_integrate_bootstrap=args.pool_integrate_bootstrap,
         resume=args.resume,
         retry_failed_prechecks=args.retry_failed_prechecks,
     )
@@ -210,6 +218,8 @@ def main(argv: list[str] | None = None) -> None:
             parser.error("--pool-enabled requires --pool-bootstrap-dir")
         if not args.pool_bootstrap_dir.is_dir():
             parser.error(f"--pool-bootstrap-dir not a directory: {args.pool_bootstrap_dir}")
+    elif args.pool_integrate_bootstrap:
+        parser.error("--pool-integrate-bootstrap requires --pool-enabled")
 
     if args.hacker_privileged_disable_iteration < 0:
         parser.error("--hacker-privileged-disable-iteration must be >= 0")

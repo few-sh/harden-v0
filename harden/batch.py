@@ -116,17 +116,22 @@ async def harden_batch(config: BatchHardenConfig) -> list[dict]:
             logger.warning("[%s] Could not reload existing result; omitted from summary", task_id)
 
     with pool_context(config) as pool_server:
-        # Seed every fresh task's pool cursor to the bootstrap SHA so iter-0
-        # doesn't waste a fixer turn integrating the raw bootstrap commit.
+        # Default: seed every fresh task's pool cursor to the current pool HEAD
+        # so iter-0 doesn't waste a fixer turn integrating a task-specific
+        # bootstrap (KernelBench bootstrap dirs include the source task's
+        # reference.py, which would corrupt sibling tasks). With
+        # --pool-integrate-bootstrap, skip the seed: PoolCursor defaults to
+        # None and iter-0 becomes a skip-hacker pool-sync iter that ports the
+        # entire pool history into /logs/artifacts/.
         # Tasks with an existing pool_sha.txt (resumed runs) are left alone.
-        if pool_server is not None:
-            bootstrap_sha = get_pool_head(pool_server.bare_path)
+        if pool_server is not None and not config.pool_integrate_bootstrap:
+            pool_head_sha = get_pool_head(pool_server.bare_path)
             for task_id in tasks_to_run:
                 task_output_dir = config.output_dir / task_id
                 sha_file = task_output_dir / "pool_sha.txt"
                 if not sha_file.exists():
                     task_output_dir.mkdir(parents=True, exist_ok=True)
-                    write_last_seen_sha(task_output_dir, bootstrap_sha)
+                    write_last_seen_sha(task_output_dir, pool_head_sha)
 
         # Each task gets:
         #   - a generator object (not yet started — no code runs until __anext__)
