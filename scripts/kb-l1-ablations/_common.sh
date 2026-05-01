@@ -44,7 +44,10 @@ fi
 # SMOKE mode: single task, max-iter 2, distinct output dir, max-concurrent 1.
 # Otherwise: --all 100 tasks at the run's configured concurrency.
 if [ -n "${SMOKE:-}" ]; then
-  TASK_FLAGS="--task-id $SMOKE_TASK"
+  # Plural --task-ids (vs --task-id) routes through harden_batch so the smoke
+  # exercises the same code path as the full --all run, including pool cursor
+  # pre-seeding (iter 0 runs the hacker instead of a pool-sync skip).
+  TASK_FLAGS="--task-ids $SMOKE_TASK"
   ITER_FLAGS="--max-iterations 2"
   OUT_DIR="$HARDEN_DIR/outputs/smoke/$RUN_NAME"
   CONCURRENCY=1
