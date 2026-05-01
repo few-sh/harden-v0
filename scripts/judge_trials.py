@@ -352,13 +352,20 @@ def _collect_attacker_trials(task_dir: Path) -> list[tuple[Path, Path, AttackerM
     if not jobs_dir.is_dir():
         return []
 
-    discovered: list[tuple[Path, Path, AttackerModeName]] = []
+    discovered: list[tuple[Path, Path, AttackerModeName, float]] = []
     for job_dir in sorted([p for p in jobs_dir.iterdir() if p.is_dir()], key=lambda p: _job_sort_key(p.name)):
         mode = _detect_mode(job_dir.name)
         if mode is None:
             continue
         for trial_dir in _iter_trial_dirs(job_dir):
             if not (trial_dir / "result.json").exists():
+                continue
+            result_data = _load_json(trial_dir / "result.json") or {}
+            if result_data.get("exception_info") is not None and result_data.get("verifier_result") is None:
+                print(
+                    f"[{task_dir.name}] SKIP {job_dir.name}/{trial_dir.name}: "
+                    f"exception={result_data['exception_info'].get('exception_type', 'unknown')}, no verifier result"
+                )
                 continue
             discovered.append((job_dir, trial_dir, mode))
     return discovered
