@@ -48,6 +48,7 @@ AttackerModeName = Literal[
 
 _SCRIPT_DIR = Path(__file__).resolve().parent
 _DEFAULT_RUBRIC_PATH = _SCRIPT_DIR / "prompts" / "judge_rubric.txt"
+_DEFAULT_FIXER_RUBRIC_PATH = _SCRIPT_DIR / "prompts" / "fixer_rubric.txt"
 
 # Judge configuration.
 JUDGE_MODEL = "gemini/gemini-3-flash-preview"
@@ -87,7 +88,16 @@ def _load_judge_rubric() -> str:
     )
 
 
+def _load_fixer_rubric() -> str:
+    if _DEFAULT_FIXER_RUBRIC_PATH.exists():
+        return _DEFAULT_FIXER_RUBRIC_PATH.read_text()
+    raise FileNotFoundError(
+        f"Could not find fixer rubric at {_DEFAULT_FIXER_RUBRIC_PATH}. "
+        "Expected prompts/fixer_rubric.txt adjacent to harden-v0."
+    )
+
 JUDGE_RUBRIC = _load_judge_rubric()
+FIXER_RUBRIC = _load_fixer_rubric()
 
 
 @dataclass(frozen=True)
@@ -145,6 +155,7 @@ class FixerObservedTrace:
     observed_test_pass_token_count: int  # Token count for 'pass'/'success' in observations
     observed_test_fail_token_count: int  # Token count for 'fail'/'error' in observations
     observed_error_token_count: int  # Token count for 'exception'/'traceback' in observations
+    explanation: str  # Brief explanation of what the fixer appears to have done and any corrections made to the heuristic trace
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -310,11 +321,13 @@ def _extract_observed_rewards(observation_text: str) -> tuple[float, ...]:
     return tuple(out)
 
 
-def _extract_fixer_trace(trajectory_path: Path) -> FixerObservedTrace:
+def _load_trajectory_steps(trajectory_path: Path) -> list[dict[str, Any]]:
     trajectory = _load_json(trajectory_path) or {}
     steps_raw = trajectory.get("steps")
-    steps = [s for s in steps_raw if isinstance(s, dict)] if isinstance(steps_raw, list) else []
+    return [s for s in steps_raw if isinstance(s, dict)] if isinstance(steps_raw, list) else []
 
+
+def _extract_timing_from_steps(steps: list[dict[str, Any]]) -> tuple[str | None, str | None, float | None]:
     timestamps = [s.get("timestamp") for s in steps if isinstance(s.get("timestamp"), str)]
     first_ts = timestamps[0] if timestamps else None
     last_ts = timestamps[-1] if timestamps else None
@@ -323,6 +336,23 @@ def _extract_fixer_trace(trajectory_path: Path) -> FixerObservedTrace:
     dt_last = _parse_iso8601(last_ts)
     if dt_first is not None and dt_last is not None:
         duration_seconds = max(0.0, (dt_last - dt_first).total_seconds())
+    return first_ts, last_ts, duration_seconds
+
+
+def _estimate_max_input_chars(model: str) -> int:
+    import litellm
+
+    try:
+        model_info = litellm.get_model_info(model)
+        return int(model_info.get("max_input_tokens", 100000) * 0.8 * 3)
+    except Exception:
+        return 200000
+
+
+
+def _extract_fixer_trace(trajectory_path: Path) -> FixerObservedTrace:
+    steps = _load_trajectory_steps(trajectory_path)
+    first_ts, last_ts, duration_seconds = _extract_timing_from_steps(steps)
 
     bash_keystrokes = _extract_bash_keystrokes(steps)
     command_blob = "\n".join(bash_keystrokes)
@@ -354,7 +384,105 @@ def _extract_fixer_trace(trajectory_path: Path) -> FixerObservedTrace:
         observed_test_pass_token_count=len(re.findall(r"\b(pass|passed|success)\b", observation_text, flags=re.IGNORECASE)),
         observed_test_fail_token_count=len(re.findall(r"\b(fail|failed|failing|assertionerror)\b", observation_text, flags=re.IGNORECASE)),
         observed_error_token_count=len(re.findall(r"\b(error|exception|traceback)\b", observation_text, flags=re.IGNORECASE)),
+        explanation="",
     )
+
+
+def augment_fixer_trace(
+    *,
+    task_id: str,
+    trial_dir: Path,
+    heuristic_trace: FixerObservedTrace,
+    iteration_outcome: FixerIterationOutcome,
+    model: str,
+    reasoning_effort: str | None = None,
+) -> FixerObservedTrace:
+    import litellm
+    from pydantic import BaseModel, Field
+
+    class FixerTraceResponse(BaseModel):
+        trajectory_path: str = Field(...)
+        step_count: int = Field(..., ge=0)
+        first_timestamp: str | None = Field(default=None)
+        last_timestamp: str | None = Field(default=None)
+        duration_seconds: float | None = Field(default=None, ge=0.0)
+        did_read_artifacts_tests: bool = Field(...)
+        did_pool_sync_commands: bool = Field(...)
+        did_write_files: bool = Field(...)
+        did_run_tests: bool = Field(...)
+        did_git_log: bool = Field(...)
+        did_git_diff: bool = Field(...)
+        did_git_add: bool = Field(...)
+        did_git_commit: bool = Field(...)
+        did_git_push: bool = Field(...)
+        did_create_legitimate_marker: bool = Field(...)
+        observed_reward_values: list[float] = Field(default_factory=list)
+        observed_test_pass_token_count: int = Field(..., ge=0)
+        observed_test_fail_token_count: int = Field(..., ge=0)
+        observed_error_token_count: int = Field(..., ge=0)
+        explanation: str = Field(...)
+
+    trajectory_path = trial_dir / "agent" / "trajectory.json"
+    trajectory_text = trajectory_path.read_text() if trajectory_path.exists() else "(no trajectory.json)"
+
+    max_input_chars = _estimate_max_input_chars(model)
+    traj_limit = int(max_input_chars * 0.85)
+
+    user_prompt = {
+        "task_id": task_id,
+        "trial_dir": str(trial_dir),
+        "role": "fixer",
+        "heuristic_trace": heuristic_trace.to_dict(),
+        "iteration_outcome": iteration_outcome.to_dict(),
+        "trajectory": trajectory_text[:traj_limit],
+        "instructions": {
+            "start_from_heuristic_trace": True,
+            "revise_fields_only_when_trajectory_supports_it": True,
+            "preserve_trajectory_path_unless_clearly_wrong": True,
+            "return_json_only": True,
+        },
+    }
+
+    completion_kwargs: dict[str, Any] = {
+        "model": model,
+        "custom_llm_provider": "gemini",
+        "messages": [
+            {"role": "system", "content": FIXER_RUBRIC},
+            {"role": "user", "content": json.dumps(user_prompt)},
+        ],
+        "response_format": FixerTraceResponse,
+        "num_retries": 2,
+    }
+    if reasoning_effort is not None:
+        completion_kwargs["reasoning_effort"] = reasoning_effort
+
+    try:
+        response = litellm.completion(**completion_kwargs)
+        data = FixerTraceResponse.model_validate_json(response.choices[0].message.content)
+        return FixerObservedTrace(
+            trajectory_path=data.trajectory_path or heuristic_trace.trajectory_path,
+            step_count=data.step_count,
+            first_timestamp=data.first_timestamp,
+            last_timestamp=data.last_timestamp,
+            duration_seconds=data.duration_seconds,
+            did_read_artifacts_tests=data.did_read_artifacts_tests,
+            did_pool_sync_commands=data.did_pool_sync_commands,
+            did_write_files=data.did_write_files,
+            did_run_tests=data.did_run_tests,
+            did_git_log=data.did_git_log,
+            did_git_diff=data.did_git_diff,
+            did_git_add=data.did_git_add,
+            did_git_commit=data.did_git_commit,
+            did_git_push=data.did_git_push,
+            did_create_legitimate_marker=data.did_create_legitimate_marker,
+            observed_reward_values=tuple(data.observed_reward_values),
+            observed_test_pass_token_count=data.observed_test_pass_token_count,
+            observed_test_fail_token_count=data.observed_test_fail_token_count,
+            observed_error_token_count=data.observed_error_token_count,
+            explanation=data.explanation,
+        )
+    except Exception:
+        return heuristic_trace
 
 
 def _detect_fixer_iteration(job_name: str) -> int | None:
@@ -533,25 +661,9 @@ def judge_trial(
     trajectory_path = trial_dir / "agent" / "trajectory.json"
     verifier_dir = trial_dir / "verifier"
     trajectory_text = trajectory_path.read_text() if trajectory_path.exists() else "(no trajectory.json)"
-    
-    # Extract trajectory timestamps for duration heuristic.
-    first_ts: str | None = None
-    last_ts: str | None = None
-    duration_seconds: float | None = None
-    try:
-        trajectory_data = _load_json(trajectory_path) or {}
-        steps_raw = trajectory_data.get("steps")
-        steps = [s for s in steps_raw if isinstance(s, dict)] if isinstance(steps_raw, list) else []
-        timestamps = [s.get("timestamp") for s in steps if isinstance(s.get("timestamp"), str)]
-        if timestamps:
-            first_ts = timestamps[0]
-            last_ts = timestamps[-1]
-            dt_first = _parse_iso8601(first_ts)
-            dt_last = _parse_iso8601(last_ts)
-            if dt_first is not None and dt_last is not None:
-                duration_seconds = max(0.0, (dt_last - dt_first).total_seconds())
-    except Exception:
-        pass
+
+    steps = _load_trajectory_steps(trajectory_path)
+    first_ts, last_ts, duration_seconds = _extract_timing_from_steps(steps)
     verifier_stdout = (
         (verifier_dir / "test-stdout.txt").read_text()
         if (verifier_dir / "test-stdout.txt").exists()
@@ -563,11 +675,7 @@ def judge_trial(
         else ""
     )
 
-    try:
-        model_info = litellm.get_model_info(model)
-        max_input_chars = int(model_info.get("max_input_tokens", 100000) * 0.8 * 3)
-    except Exception:
-        max_input_chars = 200000
+    max_input_chars = _estimate_max_input_chars(model)
 
     traj_limit = int(max_input_chars * 0.8)
     verifier_limit = int(max_input_chars * 0.1)
@@ -757,8 +865,18 @@ def _process_task(run_dir: Path, task_id: str) -> dict[str, Any]:
 
         job_dir, iteration = fixer_by_trial[trial_key]
         try:
-            trace = _extract_fixer_trace(trial_dir / "agent" / "trajectory.json")
-            outcome = _build_fixer_iteration_outcome(iteration, iteration_outcomes.get(iteration) if iteration is not None else None)
+            outcome = _build_fixer_iteration_outcome(
+                iteration,
+                iteration_outcomes.get(iteration) if iteration is not None else None,
+            )
+            trace = augment_fixer_trace(
+                task_id=task_id,
+                trial_dir=trial_dir,
+                heuristic_trace=_extract_fixer_trace(trial_dir / "agent" / "trajectory.json"),
+                iteration_outcome=outcome,
+                model=JUDGE_MODEL,
+                reasoning_effort=JUDGE_REASONING_EFFORT,
+            )
             trial_result = _load_json(trial_dir / "result.json") or {}
             judgments.append(
                 {
@@ -767,6 +885,8 @@ def _process_task(run_dir: Path, task_id: str) -> dict[str, Any]:
                     "trial_dir": str(trial_dir),
                     "role": "fixer",
                     "iteration": iteration,
+                    "judge_model": JUDGE_MODEL,
+                    "judge_reasoning_effort": JUDGE_REASONING_EFFORT,
                     "trial_reward": _to_float(
                         ((trial_result.get("verifier_result") or {}).get("rewards") or {}).get("reward")
                     ),
