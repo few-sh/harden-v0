@@ -1,15 +1,24 @@
 """Batch orchestrator for hardening multiple tasks concurrently.
 
-Concurrency model: all active tasks advance one full hardening iteration at a
-time via asyncio.gather. `_harden_task_phases` yields once per iteration,
-after validate+replay (the section that may persist pool state). An
-asyncio.Semaphore(max_concurrent_containers) limits concurrent container runs
-across tasks and is acquired inside _harden_task_phases for each
-container-heavy step.
+Two concurrency drivers are dispatched on `pool_server`:
+
+* **Pool mode (`_run_with_iteration_barrier`)** — all active tasks advance
+  one hardening iteration at a time via asyncio.gather on per-task generator
+  yields. The barrier keeps the shared pool's history in lockstep across
+  tasks: everyone observes the same pool state at iter N start, makes their
+  decisions, optionally pushes, then advances. `pool_max_consecutive_syncs`
+  also relies on this lockstep to be meaningful.
+
+* **Pool-disabled mode (`_run_independent`)** — tasks are independent (their
+  hardened/, jobs/, result.json don't share state) so we drive each generator
+  to completion concurrently with no iter-level synchronization. Throughput
+  is bounded only by the container semaphore.
+
+Both drivers share an asyncio.Semaphore(max_concurrent_containers) acquired
+inside `_harden_task_phases` for each container-heavy step.
 
 Tasks that terminate early (robust, legitimate threshold, precheck failure)
-return from the generator before the next yield; the gather sees
-StopAsyncIteration and the task is collected as done.
+return from the generator before the next yield; both drivers handle this.
 """
 
 import asyncio
@@ -18,7 +27,7 @@ import json
 import logging
 import time
 from collections import Counter
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Callable
 from pathlib import Path
 
 from .config import BatchHardenConfig, HardenConfig
@@ -140,77 +149,150 @@ async def harden_batch(config: BatchHardenConfig) -> list[dict]:
 
         n_done = 0
 
-        async def _advance(tid: str, gen: AsyncGenerator) -> tuple[str, bool]:
-            """Advance one generator by one iteration fence. Returns (tid, still_active).
+        def _record_done(tid: str) -> None:
+            """Move a finished task's result into `results` and log it."""
+            nonlocal n_done
+            n_done += 1
+            elapsed = time.monotonic() - task_start[tid]
+            ro = task_result_out[tid]
+            result = ro[0] if ro else {"task_id": tid, "status": "error"}
+            results.append(result)
+            status = result.get("status", "unknown")
+            n_iters = len(result.get("iterations", []))
+            logger.info(
+                "[%d/%d] %s: %s (%d iters, %.0fs)",
+                n_done, n_to_run, tid, status, n_iters, elapsed,
+            )
 
-            Calls __anext__() which runs the generator body until its next yield
-            statement, then suspends.  Two outcomes:
-              - yielded → task is still active, returns True
-              - StopAsyncIteration → generator returned (task finished or failed
-                early); result has already been written into task_result_out[tid]
-            Unexpected exceptions are caught so one failing task doesn't abort
-            the entire gather round.
-            """
-            try:
-                await anext(gen)
-                return tid, True
-            except StopAsyncIteration:
-                # Generator ran off the end or hit an explicit return — task done.
-                return tid, False
-            except Exception as e:
-                logger.error("[%s] Phase failed with exception: %s", tid, e)
-                ro = task_result_out[tid]
-                if not ro:
-                    # Generator died before writing a result; synthesise an error entry.
-                    ro.append({"task_id": tid, "status": "error", "error": str(e)})
-                return tid, False
-
-        # ── Iteration-barrier loop ────────────────────────────────────────────
-        # Each gather call advances all active tasks to their next iteration
-        # fence (or completion).
-        #
-        # heavy work inside the generator acquires `semaphore` first, so at most
-        # max_concurrent_containers tasks run containers at any one time — but
-        # the gather itself waits for ALL tasks to reach the yield (or finish)
-        # before this loop body continues. That wait is the iteration barrier:
-        # no task begins its next iteration until every active task has either
-        # reached the fence or completed.
-        try:
-            while task_gens:
-                phase_outcomes = await asyncio.gather(
-                    *[_advance(tid, gen) for tid, gen in task_gens.items()]
-                )
-
-                next_task_gens: dict[str, AsyncGenerator] = {}
-                for tid, still_active in phase_outcomes:
-                    if still_active:
-                        next_task_gens[tid] = task_gens[tid]
-                    else:
-                        n_done += 1
-                        elapsed = time.monotonic() - task_start[tid]
-                        ro = task_result_out[tid]
-                        result = ro[0] if ro else {"task_id": tid, "status": "error"}
-                        results.append(result)
-                        status = result.get("status", "unknown")
-                        n_iters = len(result.get("iterations", []))
-                        logger.info(
-                            "[%d/%d] %s: %s (%d iters, %.0fs)",
-                            n_done, n_to_run, tid, status, n_iters, elapsed,
-                        )
-
-                task_gens = next_task_gens
-                _print_summary(results, config, total=total, finished=False,
-                               running_task_ids=list(task_gens))
-        finally:
-            # Cleanup: This ensures that we wait for any tasks that got cancelled with Ctrl-C.
-            if task_gens:
-                await asyncio.gather(
-                    *[gen.aclose() for gen in task_gens.values()],
-                    return_exceptions=True,
-                )
+        if pool_server is not None:
+            await _run_with_iteration_barrier(
+                task_gens=task_gens,
+                task_result_out=task_result_out,
+                record_done=_record_done,
+                results=results,
+                config=config,
+                total=total,
+            )
+        else:
+            await _run_independent(
+                task_gens=task_gens,
+                task_result_out=task_result_out,
+                record_done=_record_done,
+                results=results,
+                config=config,
+                total=total,
+            )
 
     _print_summary(results, config, total=total, finished=True, running_task_ids=[])
     return results
+
+
+async def _run_with_iteration_barrier(
+    *,
+    task_gens: dict[str, AsyncGenerator],
+    task_result_out: dict[str, list],
+    record_done: Callable[[str], None],
+    results: list[dict],
+    config: BatchHardenConfig,
+    total: int,
+) -> None:
+    """Pool-mode driver: lockstep iteration across tasks.
+
+    Each gather round advances every active task to its next yield (or
+    completion). The barrier ensures the shared pool is observed
+    consistently across tasks at every iter boundary.
+    """
+    async def _advance(tid: str, gen: AsyncGenerator) -> tuple[str, bool]:
+        """Advance one generator to its next yield. Returns (tid, still_active).
+
+        - yielded            → still active.
+        - StopAsyncIteration → generator returned (result already in task_result_out).
+        - Other Exception    → one task's crash; logged and recorded as error,
+                               doesn't abort the gather round for sibling tasks.
+        """
+        try:
+            await anext(gen)
+            return tid, True
+        except StopAsyncIteration:
+            return tid, False
+        except Exception as e:
+            logger.error("[%s] Phase failed with exception: %s", tid, e)
+            ro = task_result_out[tid]
+            if not ro:
+                ro.append({"task_id": tid, "status": "error", "error": str(e)})
+            return tid, False
+
+    try:
+        while task_gens:
+            phase_outcomes = await asyncio.gather(
+                *[_advance(tid, gen) for tid, gen in task_gens.items()]
+            )
+            next_task_gens: dict[str, AsyncGenerator] = {}
+            for tid, still_active in phase_outcomes:
+                if still_active:
+                    next_task_gens[tid] = task_gens[tid]
+                else:
+                    record_done(tid)
+            task_gens = next_task_gens
+            _print_summary(results, config, total=total, finished=False,
+                           running_task_ids=list(task_gens))
+    finally:
+        # Ctrl-C / cancel: aclose pending generators so their `finally` blocks run.
+        if task_gens:
+            await asyncio.gather(
+                *[gen.aclose() for gen in task_gens.values()],
+                return_exceptions=True,
+            )
+
+
+async def _run_independent(
+    *,
+    task_gens: dict[str, AsyncGenerator],
+    task_result_out: dict[str, list],
+    record_done: Callable[[str], None],
+    results: list[dict],
+    config: BatchHardenConfig,
+    total: int,
+) -> None:
+    """Pool-disabled driver: each task runs to completion independently.
+
+    No iter-level barrier — fast tasks don't wait on slow ones. Container
+    concurrency is still capped by the semaphore acquired inside
+    `_harden_task_phases`.
+    """
+    running: set[str] = set(task_gens)
+
+    async def _drive(tid: str, gen: AsyncGenerator) -> None:
+        try:
+            async for _ in gen:
+                pass
+        except Exception as e:
+            logger.error("[%s] Task failed: %s", tid, e)
+            ro = task_result_out[tid]
+            if not ro:
+                ro.append({"task_id": tid, "status": "error", "error": str(e)})
+        # Bookkeeping below runs only on normal completion. CancelledError is
+        # a BaseException, not Exception — it propagates past the try/except
+        # and skips this section, which is what we want (a cancelled task
+        # shouldn't be "recorded" as done).
+        running.discard(tid)
+        record_done(tid)
+        _print_summary(results, config, total=total, finished=False,
+                       running_task_ids=sorted(running))
+
+    try:
+        await asyncio.gather(
+            *[_drive(tid, gen) for tid, gen in task_gens.items()]
+        )
+    finally:
+        # Ctrl-C / cancel: aclose anything still running so the generators'
+        # `finally` blocks (e.g. pool_cursor cleanup) get a chance to run.
+        pending = [task_gens[tid] for tid in running]
+        if pending:
+            await asyncio.gather(
+                *[g.aclose() for g in pending],
+                return_exceptions=True,
+            )
 
 
 def _print_summary(

@@ -51,6 +51,15 @@ For each iteration (up to `max_iterations`, default 10):
 3. **Validate**: solver/oracle must still pass. If not, revert; feedback sent to fixer next iteration.
 4. **Targeted replay** (if `--replay-enabled`): up to `replay_retries` attempts to reproduce the prior exploit on the patched task. If reward ≥ `hack_threshold`, the fix is rejected (outcome `replay_broke_fix`) and feedback goes to the next fixer turn. Hardened state is only committed when both solver **and** replay agree.
 
+## Batch concurrency
+
+`harden_batch` dispatches on `pool_server` for two distinct drivers:
+
+* **Pool mode (iteration barrier).** When `--pool-enabled`, all active tasks advance one hardening iteration at a time via `asyncio.gather` on per-task generator yields. The barrier keeps the shared pool's history in lockstep — every task observes the same pool state at iter N start, then optionally pushes, then advances. `pool_max_consecutive_syncs` relies on this lockstep to be meaningful. Cost: fast tasks idle at the barrier waiting for slow peers.
+* **Pool-disabled mode (independent).** Tasks have no shared mutable state, so each task generator is driven to completion concurrently with no iter-level synchronization. Container concurrency is still capped by `--max-concurrent`. Throughput is strictly higher than barrier mode for uneven task durations.
+
+Both drivers share the same `asyncio.Semaphore(max_concurrent_containers)` acquired inside `_harden_task_phases` for each container-heavy step.
+
 ## Module layout
 
 ```
