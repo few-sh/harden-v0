@@ -499,6 +499,25 @@ def _fixer_job_sort_key(job_name: str) -> tuple[int, int, str, str]:
     return (2, 0, "", job_name)
 
 
+def _combined_job_sort_key(job_name: str) -> tuple[int, int, int, str, str]:
+    """Unified ordering across attacker and fixer jobs.
+
+    Primary key is embedded timestamp (chronological run order when present),
+    with fallback to attacker/fixer natural ordering and lexical name.
+    """
+    ts_match = re.search(r"__(\d{8}_\d{6})__(?:[^_].*)?$", job_name)
+    if ts_match:
+        # Use timestamp first to preserve actual run order across roles.
+        return (0, 0, 0, ts_match.group(1), job_name)
+
+    if job_name.startswith("fixer_iter") or job_name.startswith("fixer_live"):
+        kind, iteration, ts, name = _fixer_job_sort_key(job_name)
+        return (1, kind, iteration, ts, name)
+
+    kind, iteration, attempt, ts, name = _job_sort_key(job_name)
+    return (2, kind * 1000 + iteration, attempt, ts, name)
+
+
 def judge_trial(
     *,
     task_id: str,
@@ -677,56 +696,76 @@ def _process_task(run_dir: Path, task_id: str) -> dict[str, Any]:
         }
 
     judgments: list[dict[str, Any]] = []
-    fixer_judgments: list[dict[str, Any]] = []
     errors: list[dict[str, str]] = []
     iteration_outcomes = _load_iteration_outcomes(task_dir)
 
-    for job_dir, trial_dir, mode in _collect_attacker_trials(task_dir):
-        try:
-            reward = _read_reward(trial_dir)
-            judgment = judge_trial(
-                task_id=task_id,
-                role="attacker",
-                mode=mode,
-                targeted_categories=(),
-                trial_dir=trial_dir,
-                reward=reward,
-                model=JUDGE_MODEL,
-                reasoning_effort=JUDGE_REASONING_EFFORT,
-            )
-            judgments.append(
-                {
-                    "job_name": job_dir.name,
-                    "trial_name": trial_dir.name,
-                    "trial_dir": str(trial_dir),
-                    "role": "attacker",
-                    "mode": mode,
-                    "reward": reward,
-                    "judge_model": JUDGE_MODEL,
-                    "judge_reasoning_effort": JUDGE_REASONING_EFFORT,
-                    "judgment": judgment.to_dict(),
-                }
-            )
-            print(
-                f"[{task_id}] judged {job_dir.name}/{trial_dir.name}: "
-                f"hack_success={judgment.hack_success} serious_hack={judgment.serious_hack}"
-            )
-        except Exception as exc:
-            errors.append(
-                {
-                    "job_name": job_dir.name,
-                    "trial_name": trial_dir.name,
-                    "error": str(exc),
-                }
-            )
-            print(f"[{task_id}] ERROR {job_dir.name}/{trial_dir.name}: {exc}")
+    attacker_by_trial: dict[str, tuple[Path, AttackerModeName]] = {
+        str(trial_dir): (job_dir, mode)
+        for job_dir, trial_dir, mode in _collect_attacker_trials(task_dir)
+    }
+    fixer_by_trial: dict[str, tuple[Path, int | None]] = {
+        str(trial_dir): (job_dir, iteration)
+        for job_dir, trial_dir, iteration in _collect_fixer_trials(task_dir)
+    }
 
-    for job_dir, trial_dir, iteration in _collect_fixer_trials(task_dir):
+    ordered_trial_dirs: list[Path] = sorted(
+        [Path(p) for p in [*attacker_by_trial.keys(), *fixer_by_trial.keys()]],
+        key=lambda trial_dir: (
+            _combined_job_sort_key(trial_dir.parent.name),
+            trial_dir.name,
+        ),
+    )
+
+    for trial_dir in ordered_trial_dirs:
+        trial_key = str(trial_dir)
+        if trial_key in attacker_by_trial:
+            job_dir, mode = attacker_by_trial[trial_key]
+            try:
+                reward = _read_reward(trial_dir)
+                judgment = judge_trial(
+                    task_id=task_id,
+                    role="attacker",
+                    mode=mode,
+                    targeted_categories=(),
+                    trial_dir=trial_dir,
+                    reward=reward,
+                    model=JUDGE_MODEL,
+                    reasoning_effort=JUDGE_REASONING_EFFORT,
+                )
+                judgments.append(
+                    {
+                        "job_name": job_dir.name,
+                        "trial_name": trial_dir.name,
+                        "trial_dir": str(trial_dir),
+                        "role": "attacker",
+                        "mode": mode,
+                        "reward": reward,
+                        "judge_model": JUDGE_MODEL,
+                        "judge_reasoning_effort": JUDGE_REASONING_EFFORT,
+                        "judgment": judgment.to_dict(),
+                    }
+                )
+                print(
+                    f"[{task_id}] judged {job_dir.name}/{trial_dir.name}: "
+                    f"hack_success={judgment.hack_success} serious_hack={judgment.serious_hack}"
+                )
+            except Exception as exc:
+                errors.append(
+                    {
+                        "job_name": job_dir.name,
+                        "trial_name": trial_dir.name,
+                        "error": str(exc),
+                    }
+                )
+                print(f"[{task_id}] ERROR {job_dir.name}/{trial_dir.name}: {exc}")
+            continue
+
+        job_dir, iteration = fixer_by_trial[trial_key]
         try:
             trace = _extract_fixer_trace(trial_dir / "agent" / "trajectory.json")
             outcome = _build_fixer_iteration_outcome(iteration, iteration_outcomes.get(iteration) if iteration is not None else None)
             trial_result = _load_json(trial_dir / "result.json") or {}
-            fixer_judgments.append(
+            judgments.append(
                 {
                     "job_name": job_dir.name,
                     "trial_name": trial_dir.name,
@@ -769,24 +808,12 @@ def _process_task(run_dir: Path, task_id: str) -> dict[str, Any]:
     out_path = task_dir / "task_judgments.json"
     _write_json(out_path, payload)
 
-    fixer_payload = {
-        "task_id": task_id,
-        "run_dir": str(run_dir),
-        "generated_at": datetime.now(timezone.utc).isoformat(),
-        "fixer_judgments": fixer_judgments,
-        "errors": errors,
-    }
-    fixer_out_path = task_dir / "fixer_judgments.json"
-    _write_json(fixer_out_path, fixer_payload)
-
     return {
         "task_id": task_id,
         "status": "ok",
         "judgments_written": len(judgments),
-        "fixer_judgments_written": len(fixer_judgments),
         "errors": len(errors),
         "output": str(out_path),
-        "fixer_output": str(fixer_out_path),
     }
 
 
