@@ -141,7 +141,7 @@ def llm_summarize_hack(
         )
 
         chunks = _chunk_text_by_lines(raw, _TRAJECTORY_CHUNK_CHARS) if raw else [""]
-        truncated_verifier = verifier_text[:_VERIFIER_MAX_CHARS] if verifier_text else ""
+        truncated_verifier = verifier_text[-_VERIFIER_MAX_CHARS:] if verifier_text else ""
         prior: HackSummaryResponse | None = None
 
         for idx, chunk in enumerate(chunks):
