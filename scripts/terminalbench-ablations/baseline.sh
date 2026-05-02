@@ -17,5 +17,6 @@ cd ~/truthserum/harden-v0 \
 --solver-timeout-multiplier 10.0 \
 --hacker-timeout-multiplier 10.0 \
 --pool-enabled \
+--hacker-feedback \
 --pool-bootstrap-dir=../datasets/mixed_tag_hackable_terminalbench/$BOOTSTRAP_TASK/ \
---output-dir outputs/terminalbench-ablations-baseline
+--output-dir outputs/terminalbench-ablations-baseline-hackerfeedback \
