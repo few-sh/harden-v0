@@ -9,6 +9,41 @@ logger = logging.getLogger(__name__)
 # Filename used to cache LLM-generated summaries alongside the trajectory.
 _SUMMARY_CACHE_FILE = "hack_summary.txt"
 
+# Per-LLM-call chunk size for trajectory text (characters). Chosen conservatively
+# so that even with verifier output and prompts the request stays well under
+# typical Gemini context limits (~1M tokens, ~4 chars/token).
+_TRAJECTORY_CHUNK_CHARS = 60_000
+# Max verifier output size sent to the LLM (final batch only).
+_VERIFIER_MAX_CHARS = 20_000
+
+
+def _chunk_text_by_lines(text: str, max_chars: int) -> list[str]:
+    """Split ``text`` into chunks of at most ``max_chars`` characters,
+    preferring line boundaries. Long single lines are hard-split.
+    """
+    if len(text) <= max_chars:
+        return [text]
+    chunks: list[str] = []
+    current: list[str] = []
+    current_len = 0
+    for line in text.splitlines(keepends=True):
+        if len(line) > max_chars:
+            if current:
+                chunks.append("".join(current))
+                current, current_len = [], 0
+            for i in range(0, len(line), max_chars):
+                chunks.append(line[i : i + max_chars])
+            continue
+        if current_len + len(line) > max_chars and current:
+            chunks.append("".join(current))
+            current, current_len = [line], len(line)
+        else:
+            current.append(line)
+            current_len += len(line)
+    if current:
+        chunks.append("".join(current))
+    return chunks
+
 
 def llm_summarize_hack(
     trial_dir: Path,
@@ -20,6 +55,12 @@ def llm_summarize_hack(
     The result is cached to ``<trial_dir>/agent/hack_summary.txt`` so subsequent
     calls (and ``extract_hack_summary``) return immediately without re-invoking
     the model.
+
+    For long trajectories that would not fit in a single LLM call, performs
+    rolling/batched summarization: the trajectory text is split into
+    ``_TRAJECTORY_CHUNK_CHARS``-sized chunks and each call refines the
+    structured summary produced by the previous call. Verifier output is
+    attached only on the final chunk.
 
     Falls back to the heuristic ``extract_hack_summary`` if anything goes wrong.
     """
@@ -94,35 +135,54 @@ def llm_summarize_hack(
             "Use only evidence present in the provided trajectory/verifier text; do not infer unseen behavior. "
             "If verifier output is missing or inconclusive, say so explicitly rather than speculating. "
             "For failed_test_assertions: include only notable failed tests/assertions supported by explicit output, "
-            "and for each one include the likely failure reason grounded in the observed mismatch/error text."
+            "and for each one include the likely failure reason grounded in the observed mismatch/error text. "
+            "If a 'previous_summary' field is provided, treat it as a partial summary of earlier trajectory chunks "
+            "and refine/extend it using the new chunk; do not discard previously-noted findings unless contradicted."
         )
-        user_prompt = {
-            "trajectory": raw,
-            "verifier_output": verifier_text[:4000] if verifier_text else "(none)",
-            "instructions": {
-                "ground_claims_in_evidence": True,
-                "no_speculation_on_missing_logs": True,
-                "failed_test_assertions_require_explicit_failure_evidence": True,
-                "prefer_concrete_test_names_and_assertion_mismatches": True,
-                "if_no_verifier_output_set_test_results_summary_to_unavailable": True,
-            },
-        }
 
-        completion_kwargs: dict = {
-            "model": model,
-            "custom_llm_provider": "gemini",
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": json.dumps(user_prompt)},
-            ],
-            "response_format": HackSummaryResponse,
-            "num_retries": 2,
-        }
-        if reasoning_effort is not None:
-            completion_kwargs["reasoning_effort"] = reasoning_effort
+        chunks = _chunk_text_by_lines(raw, _TRAJECTORY_CHUNK_CHARS) if raw else [""]
+        truncated_verifier = verifier_text[:_VERIFIER_MAX_CHARS] if verifier_text else ""
+        prior: HackSummaryResponse | None = None
 
-        response = litellm.completion(**completion_kwargs)
-        data = HackSummaryResponse.model_validate_json(response.choices[0].message.content)
+        for idx, chunk in enumerate(chunks):
+            is_final = idx == len(chunks) - 1
+            user_prompt: dict = {
+                "trajectory_chunk": chunk,
+                "chunk_index": idx + 1,
+                "chunk_total": len(chunks),
+                "verifier_output": truncated_verifier if is_final else "(deferred to final chunk)",
+                "instructions": {
+                    "ground_claims_in_evidence": True,
+                    "no_speculation_on_missing_logs": True,
+                    "failed_test_assertions_require_explicit_failure_evidence": True,
+                    "prefer_concrete_test_names_and_assertion_mismatches": True,
+                    "if_no_verifier_output_set_test_results_summary_to_unavailable": True,
+                    "rolling_summary": len(chunks) > 1,
+                },
+            }
+            if prior is not None:
+                user_prompt["previous_summary"] = prior.model_dump()
+
+            completion_kwargs: dict = {
+                "model": model,
+                "custom_llm_provider": "gemini",
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": json.dumps(user_prompt)},
+                ],
+                "response_format": HackSummaryResponse,
+                "num_retries": 2,
+            }
+            if reasoning_effort is not None:
+                completion_kwargs["reasoning_effort"] = reasoning_effort
+
+            response = litellm.completion(**completion_kwargs)
+            prior = HackSummaryResponse.model_validate_json(
+                response.choices[0].message.content
+            )
+
+        assert prior is not None
+        data = prior
 
         lines = [
             f"Strategy: {data.strategy}",
