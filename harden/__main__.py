@@ -95,6 +95,9 @@ def _build_parser() -> argparse.ArgumentParser:
                         help="Inject /solution/ into the solver's env (solver mode only)")
     parser.add_argument("--hacker-feedback", action="store_true",
                         help="Give hacker read-only access to previous failed attempts")
+    parser.add_argument("--summary-model", default=None,
+                        help="Model used to LLM-summarize failed hack trajectories after each attempt. "
+                             "Defaults to fixer_model when omitted. Pass empty string to disable.")
     parser.add_argument("--hacker-privileged", action="store_true",
                         help="Give hacker read-only access to the evaluation environment "
                              "(tests/, environment/) at /eval_env/")
@@ -178,6 +181,7 @@ def _config_kwargs(args: argparse.Namespace) -> dict:
         reasoning_effort=args.reasoning_effort,
         solver_privileged=args.solver_privileged,
         hacker_feedback=args.hacker_feedback,
+        summary_model=args.summary_model,
         hacker_privileged=args.hacker_privileged,
         hacker_privileged_disable_iteration=args.hacker_privileged_disable_iteration,
         replay_enabled=args.replay_enabled,
