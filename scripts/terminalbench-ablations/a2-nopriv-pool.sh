@@ -17,4 +17,4 @@ cd ~/truthserum/harden-v0 \
 --pool-enabled \
 --hacker-feedback \
 --pool-bootstrap-dir=../datasets/mixed_tag_hackable_terminalbench/$BOOTSTRAP_TASK/ \
---output-dir outputs/terminalbench-ablations-baseline-hackerfeedback \
+--output-dir outputs/terminalbench-ablations-nopriv-pool-hackerfeedback \

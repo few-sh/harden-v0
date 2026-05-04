@@ -15,4 +15,4 @@ cd ~/truthserum/harden-v0 \
 --solver-timeout-multiplier 10.0 \
 --hacker-timeout-multiplier 10.0 \
 --hacker-feedback \
---output-dir outputs/terminalbench-ablations-priv-nopool-hackerfeedback \
+--output-dir outputs/terminalbench-ablations-nopriv-nopool-hackerfeedback \
