@@ -342,10 +342,20 @@ async def main():
         )
         return r
 
+    # Interleave trials across tasks so the semaphore slots are spread across
+    # different tasks rather than exhausted by the first task's trial list.
+    from itertools import zip_longest
+    interleaved: list[tuple[str, dict]] = [
+        item
+        for group in zip_longest(*[
+            [(tid, t) for t in trials]
+            for tid, trials in per_task_trials.items()
+        ])
+        for item in group
+        if item is not None
+    ]
     all_results: list[dict] = list(await asyncio.gather(*(
-        wrapped(task_id, trial)
-        for task_id, trials in per_task_trials.items()
-        for trial in trials
+        wrapped(task_id, trial) for task_id, trial in interleaved
     )))
 
     # Write per-task results
