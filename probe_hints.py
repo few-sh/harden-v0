@@ -13,6 +13,7 @@ sys.path.insert(0, str(REPO_ROOT))
 
 from harden.agent import run_hacker
 from harden.instructions import build_hinted_hacker_instruction
+from harden.precheck_cache import _hash_path_tree
 from harden.workspace import create_working_copy, replace_instruction
 
 DEFAULT_MODEL = "gemini/gemini-3.1-pro-preview"
@@ -54,6 +55,14 @@ def resolve_task_source_dir(tasks_dir: Path, task_id: str) -> Path:
     if not (direct / "instruction.md").exists() and hardened.is_dir():
         return hardened
     return direct
+
+
+def task_envs_identical(pristine_dir: Path, propagated_dir: Path) -> bool:
+    """Return True if environment/ and tests/ are byte-for-byte identical in both dirs."""
+    for subdir in ("environment", "tests"):
+        if _hash_path_tree(pristine_dir / subdir) != _hash_path_tree(propagated_dir / subdir):
+            return False
+    return True
 
 
 def discover_task_ids(tasks_dir: Path) -> list[str]:
@@ -276,6 +285,12 @@ async def main():
                       file=sys.stderr)
                 ok = False
                 break
+        if ok and "pristine" in envs and "propagated" in envs:
+            pristine_src = resolve_task_source_dir(task_dirs["pristine"], task_id)
+            propagated_src = resolve_task_source_dir(task_dirs["propagated"], task_id)
+            if task_envs_identical(pristine_src, propagated_src):
+                print(f"INFO: task {task_id!r} environment/tests unchanged — skipping", flush=True)
+                ok = False
         if ok:
             task_ids.append(task_id)
 
