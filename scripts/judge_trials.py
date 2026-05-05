@@ -540,17 +540,28 @@ def _build_fixer_iteration_outcome(iteration: int | None, record: dict[str, Any]
 
 
 def _infer_task_ids(run_dir: Path) -> list[str]:
+    # New hint-probe format: config.json with task_ids list
+    cfg = _load_json(run_dir / "config.json") or {}
+    if "envs" in cfg or "hints" in cfg:
+        ids = cfg.get("task_ids")
+        if isinstance(ids, list):
+            out = [x for x in ids if isinstance(x, str) and x.strip() and (run_dir / x).is_dir()]
+            if out:
+                return out
+
+    # Old harden format: batch_config.json
     cfg = _load_json(run_dir / "batch_config.json") or {}
     ids = cfg.get("task_ids")
     if isinstance(ids, list):
         out = [x for x in ids if isinstance(x, str) and x.strip()]
         if out:
             return out
+
     discovered: list[str] = []
     for child in sorted(run_dir.iterdir(), key=lambda p: p.name):
         if not child.is_dir() or child.name in {"pool.git", "hardened"}:
             continue
-        if (child / "jobs").is_dir() or (child / "result.json").exists():
+        if (child / "jobs").is_dir() or (child / "result.json").exists() or (child / "trials").is_dir():
             discovered.append(child.name)
     return discovered
 
@@ -807,6 +818,65 @@ def _collect_fixer_trials(task_dir: Path) -> list[tuple[Path, Path, int | None]]
     return discovered
 
 
+def _detect_hint_id_from_condition(condition: str) -> str:
+    """Extract hint_id from condition name, e.g. 'hint_06-bash-replacement' → '06-bash-replacement'."""
+    if condition.startswith("hint_"):
+        return condition[len("hint_"):]
+    return ""
+
+
+def _collect_hint_probe_trials(task_dir: Path) -> list[tuple[Path, Path, AttackerModeName, str, str, int]]:
+    """Collect trials from hint-probe format.
+
+    Returns list of (job_dir, trial_dir, mode, env, condition, attempt_num).
+    Structure: <task_dir>/trials/<env>/<condition>/attempt_N/jobs/<job_name>/<trial_dir>/
+    """
+    trials_root = task_dir / "trials"
+    if not trials_root.is_dir():
+        return []
+
+    discovered: list[tuple[Path, Path, AttackerModeName, str, str, int]] = []
+    for env_dir in sorted(trials_root.iterdir(), key=lambda p: p.name):
+        if not env_dir.is_dir():
+            continue
+        env = env_dir.name
+        for condition_dir in sorted(env_dir.iterdir(), key=lambda p: p.name):
+            if not condition_dir.is_dir():
+                continue
+            condition = condition_dir.name
+            # All hint-probe conditions are attacker-style runs
+            mode: AttackerModeName = "general-hacker"
+            for attempt_dir in sorted(condition_dir.iterdir(), key=lambda p: p.name):
+                if not attempt_dir.is_dir() or not attempt_dir.name.startswith("attempt_"):
+                    continue
+                try:
+                    attempt_num = int(attempt_dir.name.split("_")[1])
+                except (IndexError, ValueError):
+                    attempt_num = 0
+                jobs_dir = attempt_dir / "jobs"
+                if not jobs_dir.is_dir():
+                    continue
+                for job_dir in sorted(jobs_dir.iterdir(), key=lambda p: p.name):
+                    if not job_dir.is_dir():
+                        continue
+                    for trial_dir in sorted(job_dir.iterdir(), key=lambda p: p.name):
+                        if not trial_dir.is_dir():
+                            continue
+                        if not (trial_dir / "result.json").exists():
+                            continue
+                        result_data = _load_json(trial_dir / "result.json") or {}
+                        if result_data.get("exception_info") is not None and result_data.get("verifier_result") is None:
+                            print(
+                                f"[{task_dir.name}] SKIP {env}/{condition}/attempt_{attempt_num}"
+                                f"/{job_dir.name}/{trial_dir.name}: "
+                                f"exception={result_data['exception_info'].get('exception_type', 'unknown')},"
+                                f" no verifier result"
+                            )
+                            continue
+                        discovered.append((job_dir, trial_dir, mode, env, condition, attempt_num))
+    return discovered
+
+
 def _process_task(run_dir: Path, task_id: str) -> dict[str, Any]:
     task_dir = run_dir / task_id
     if not task_dir.is_dir():
@@ -818,6 +888,75 @@ def _process_task(run_dir: Path, task_id: str) -> dict[str, Any]:
 
     judgments: list[dict[str, Any]] = []
     errors: list[dict[str, str]] = []
+
+    # Hint-probe format: tasks use trials/<env>/<condition>/attempt_N/ layout
+    if (task_dir / "trials").is_dir():
+        for job_dir, trial_dir, mode, env, condition, attempt_num in _collect_hint_probe_trials(task_dir):
+            hint_id = _detect_hint_id_from_condition(condition)
+            try:
+                reward = _read_reward(trial_dir)
+                judgment = judge_trial(
+                    task_id=task_id,
+                    role="attacker",
+                    mode=mode,
+                    targeted_categories=(),
+                    trial_dir=trial_dir,
+                    reward=reward,
+                    model=JUDGE_MODEL,
+                    reasoning_effort=JUDGE_REASONING_EFFORT,
+                )
+                judgments.append(
+                    {
+                        "job_name": job_dir.name,
+                        "trial_name": trial_dir.name,
+                        "trial_dir": str(trial_dir),
+                        "role": "attacker",
+                        "mode": mode,
+                        "env": env,
+                        "condition": condition,
+                        "hint_id": hint_id,
+                        "attempt": attempt_num,
+                        "reward": reward,
+                        "judge_model": JUDGE_MODEL,
+                        "judge_reasoning_effort": JUDGE_REASONING_EFFORT,
+                        "judgment": judgment.to_dict(),
+                    }
+                )
+                print(
+                    f"[{task_id}] judged {env}/{condition}/attempt_{attempt_num}/{trial_dir.name}: "
+                    f"hack_success={judgment.hack_success} serious_hack={judgment.serious_hack}"
+                )
+            except Exception as exc:
+                errors.append(
+                    {
+                        "job_name": job_dir.name,
+                        "trial_name": trial_dir.name,
+                        "env": env,
+                        "condition": condition,
+                        "attempt": attempt_num,
+                        "error": str(exc),
+                    }
+                )
+                print(f"[{task_id}] ERROR {env}/{condition}/attempt_{attempt_num}/{trial_dir.name}: {exc}")
+
+        payload = {
+            "task_id": task_id,
+            "run_dir": str(run_dir),
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "judgments": judgments,
+            "errors": errors,
+        }
+        out_path = task_dir / "task_judgments.json"
+        _write_json(out_path, payload)
+        return {
+            "task_id": task_id,
+            "status": "ok",
+            "judgments_written": len(judgments),
+            "errors": len(errors),
+            "output": str(out_path),
+        }
+
+    # Old harden format: tasks use jobs/ layout
     iteration_outcomes = _load_iteration_outcomes(task_dir)
 
     attacker_by_trial: dict[str, tuple[Path, AttackerModeName]] = {
