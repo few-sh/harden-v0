@@ -1,5 +1,6 @@
 cd ..
-uv run ./probe_hints.py --all \
+uv run ./probe_hints.py \
+ --task-ids chem-property-targeting \
  --max-concurrent 100 \
  --envs pristine,propagated \
  --solver-attempts 3 \

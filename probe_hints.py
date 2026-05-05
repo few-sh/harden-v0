@@ -12,7 +12,7 @@ REPO_ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(REPO_ROOT))
 
 from harden.agent import run_hacker
-from harden.instructions import build_hinted_hacker_instruction
+from harden.instructions import build_hacker_instruction, build_hinted_hacker_instruction
 from harden.precheck_cache import _hash_path_tree
 from harden.workspace import create_working_copy, replace_instruction
 
@@ -84,7 +84,7 @@ def build_trial_list(
     solver_attempts: int,
     hint_attempts: int,
     kernelbench_mode: bool = True,
-    include_nohint_hack: bool = False,
+    nohint_attempts: int = 0,
 ) -> list[dict]:
     trials = []
     for env in envs:
@@ -96,13 +96,12 @@ def build_trial_list(
                 "attempt": a,
                 "kernelbench_mode": kernelbench_mode,
             })
-        if include_nohint_hack:
+        for a in range(nohint_attempts):
             trials.append({
                 "env": env,
                 "condition": "nohint",
                 "hint_id": "",
-                "attempt": 0,
-                "hint_text": "",
+                "attempt": a,
                 "kernelbench_mode": kernelbench_mode,
             })
         for hint_id, hint_text in hints:
@@ -165,8 +164,8 @@ async def run_trial(
         if condition == "solver":
             instruction = original_inst
         elif condition == "nohint":
-            instruction = build_hinted_hacker_instruction(
-                original_inst, "", kernelbench_mode=trial["kernelbench_mode"]
+            instruction = build_hacker_instruction(
+                original_inst, kernelbench_mode=trial["kernelbench_mode"]
             )
         else:
             instruction = build_hinted_hacker_instruction(
@@ -278,8 +277,8 @@ async def main():
     parser.add_argument("--output-dir", type=Path, default=None)
     parser.add_argument("--kernelbench-mode", action=argparse.BooleanOptionalAction, default=True,
                         help="Use KernelBench framing for hacker instructions (default: true)")
-    parser.add_argument("--include-nohint-hack", action="store_true", default=False,
-                        help="Add one unhinted hack trial per env (hacker framing, no hint injected)")
+    parser.add_argument("--nohint-attempts", type=int, default=0,
+                        help="Number of unhinted hack attempts per env (hacker framing, no hint injected; default: 0)")
     args = parser.parse_args()
 
     envs = [e.strip() for e in args.envs.split(",")]
@@ -336,7 +335,7 @@ async def main():
     per_task_trials: dict[str, list[dict]] = {}
     for task_id in task_ids:
         (output_dir / task_id).mkdir(parents=True, exist_ok=True)
-        per_task_trials[task_id] = build_trial_list(envs, hints, args.solver_attempts, args.hint_attempts, args.kernelbench_mode, args.include_nohint_hack)
+        per_task_trials[task_id] = build_trial_list(envs, hints, args.solver_attempts, args.hint_attempts, args.kernelbench_mode, args.nohint_attempts)
 
     total = sum(len(t) for t in per_task_trials.values())
 
@@ -350,7 +349,7 @@ async def main():
         "max_concurrent": args.max_concurrent,
         "total_trials": total,
         "kernelbench_mode": args.kernelbench_mode,
-        "include_nohint_hack": args.include_nohint_hack,
+        "nohint_attempts": args.nohint_attempts,
         "hack_threshold": args.hacker_threshold,
         "git_sha": get_git_sha(),
         "start_time": time.strftime("%Y-%m-%d %H:%M:%S"),
