@@ -42,6 +42,20 @@ def load_hints(hints_dir: Path, hint_ids: list[str] | None) -> list[tuple[str, s
     return hints
 
 
+def resolve_task_source_dir(tasks_dir: Path, task_id: str) -> Path:
+    """Return the actual task directory, transparently handling harden output layout.
+
+    Harden run outputs have the structure <output>/<task_id>/hardened/<task_id>/.
+    If the direct path <tasks_dir>/<task_id> does not contain instruction.md but
+    <tasks_dir>/<task_id>/hardened/<task_id> does, use the hardened subdirectory.
+    """
+    direct = tasks_dir / task_id
+    hardened = direct / "hardened" / task_id
+    if not (direct / "instruction.md").exists() and hardened.is_dir():
+        return hardened
+    return direct
+
+
 def build_trial_list(
     envs: list[str],
     hints: list[tuple[str, str]],
@@ -94,7 +108,7 @@ async def run_trial(
         trial_out = output_dir / "trials" / trial_label
         trial_out.mkdir(parents=True, exist_ok=True)
 
-        source_dir = task_dirs[env] / task_id
+        source_dir = resolve_task_source_dir(task_dirs[env], task_id)
         work_parent = create_working_copy(source_dir, trial_out / "task")
 
         dockerfile = work_parent / task_id / "environment" / "Dockerfile"
@@ -202,7 +216,7 @@ async def main():
         "propagated": args.propagated_tasks_dir,
     }
     for env in envs:
-        src = task_dirs[env] / args.task_id
+        src = resolve_task_source_dir(task_dirs[env], args.task_id)
         if not src.is_dir():
             print(f"ERROR: task dir not found: {src}", file=sys.stderr)
             sys.exit(1)
