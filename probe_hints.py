@@ -84,6 +84,7 @@ def build_trial_list(
     solver_attempts: int,
     hint_attempts: int,
     kernelbench_mode: bool = True,
+    include_nohint_hack: bool = False,
 ) -> list[dict]:
     trials = []
     for env in envs:
@@ -93,6 +94,15 @@ def build_trial_list(
                 "condition": "solver",
                 "hint_id": "",
                 "attempt": a,
+                "kernelbench_mode": kernelbench_mode,
+            })
+        if include_nohint_hack:
+            trials.append({
+                "env": env,
+                "condition": "nohint",
+                "hint_id": "",
+                "attempt": 0,
+                "hint_text": "",
                 "kernelbench_mode": kernelbench_mode,
             })
         for hint_id, hint_text in hints:
@@ -126,6 +136,9 @@ async def run_trial(
         if condition == "solver":
             trial_label = f"{env}/solver/attempt_{attempt}"
             role = f"solver_a{attempt}"
+        elif condition == "nohint":
+            trial_label = f"{env}/nohint/attempt_{attempt}"
+            role = f"nohint_a{attempt}"
         else:
             trial_label = f"{env}/hint_{hint_id}/attempt_{attempt}"
             role = f"hint_{hint_id}_a{attempt}"
@@ -151,6 +164,10 @@ async def run_trial(
 
         if condition == "solver":
             instruction = original_inst
+        elif condition == "nohint":
+            instruction = build_hinted_hacker_instruction(
+                original_inst, "", kernelbench_mode=trial["kernelbench_mode"]
+            )
         else:
             instruction = build_hinted_hacker_instruction(
                 original_inst, trial["hint_text"], kernelbench_mode=trial["kernelbench_mode"]
@@ -261,6 +278,8 @@ async def main():
     parser.add_argument("--output-dir", type=Path, default=None)
     parser.add_argument("--kernelbench-mode", action=argparse.BooleanOptionalAction, default=True,
                         help="Use KernelBench framing for hacker instructions (default: true)")
+    parser.add_argument("--include-nohint-hack", action="store_true", default=False,
+                        help="Add one unhinted hack trial per env (hacker framing, no hint injected)")
     args = parser.parse_args()
 
     envs = [e.strip() for e in args.envs.split(",")]
@@ -317,7 +336,7 @@ async def main():
     per_task_trials: dict[str, list[dict]] = {}
     for task_id in task_ids:
         (output_dir / task_id).mkdir(parents=True, exist_ok=True)
-        per_task_trials[task_id] = build_trial_list(envs, hints, args.solver_attempts, args.hint_attempts, args.kernelbench_mode)
+        per_task_trials[task_id] = build_trial_list(envs, hints, args.solver_attempts, args.hint_attempts, args.kernelbench_mode, args.include_nohint_hack)
 
     total = sum(len(t) for t in per_task_trials.values())
 
@@ -331,6 +350,7 @@ async def main():
         "max_concurrent": args.max_concurrent,
         "total_trials": total,
         "kernelbench_mode": args.kernelbench_mode,
+        "include_nohint_hack": args.include_nohint_hack,
         "hack_threshold": args.hacker_threshold,
         "git_sha": get_git_sha(),
         "start_time": time.strftime("%Y-%m-%d %H:%M:%S"),
