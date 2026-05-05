@@ -12,7 +12,7 @@ REPO_ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(REPO_ROOT))
 
 from harden.agent import run_hacker
-from harden.instructions import build_hacker_instruction, build_hinted_hacker_instruction
+from harden.instructions import build_hinted_hacker_instruction
 from harden.workspace import create_working_copy, replace_instruction
 
 DEFAULT_MODEL = "gemini/gemini-3.1-pro-preview"
@@ -56,6 +56,19 @@ def resolve_task_source_dir(tasks_dir: Path, task_id: str) -> Path:
     return direct
 
 
+def discover_task_ids(tasks_dir: Path) -> list[str]:
+    """Return sorted list of task IDs found in tasks_dir."""
+    if not tasks_dir.is_dir():
+        return []
+    ids = []
+    for p in sorted(tasks_dir.iterdir()):
+        if not p.is_dir():
+            continue
+        if (p / "instruction.md").exists() or (p / "hardened" / p.name / "instruction.md").exists():
+            ids.append(p.name)
+    return ids
+
+
 def build_trial_list(
     envs: list[str],
     hints: list[tuple[str, str]],
@@ -88,7 +101,7 @@ async def run_trial(
     task_id: str,
     task_dirs: dict[str, Path],
     model: str,
-    output_dir: Path,
+    task_output_dir: Path,
     sem: asyncio.Semaphore,
     hack_threshold: float,
 ) -> dict:
@@ -105,7 +118,7 @@ async def run_trial(
             trial_label = f"{env}/hint_{hint_id}/attempt_{attempt}"
             role = f"hint_{hint_id}_a{attempt}"
 
-        trial_out = output_dir / "trials" / trial_label
+        trial_out = task_output_dir / "trials" / trial_label
         trial_out.mkdir(parents=True, exist_ok=True)
 
         source_dir = resolve_task_source_dir(task_dirs[env], task_id)
@@ -145,6 +158,7 @@ async def run_trial(
             )
             elapsed = round(time.time() - t0, 1)
             return {
+                "task_id": task_id,
                 "env": env,
                 "condition": condition,
                 "hint_id": hint_id,
@@ -157,6 +171,7 @@ async def run_trial(
             }
         except Exception as e:
             return {
+                "task_id": task_id,
                 "env": env,
                 "condition": condition,
                 "hint_id": hint_id,
@@ -172,7 +187,10 @@ async def run_trial(
 def compute_summary(results: list[dict]) -> dict:
     groups: dict[str, list[dict]] = {}
     for r in results:
-        key = f"{r['env']}/{r['condition']}" + (f"/{r['hint_id']}" if r["hint_id"] else "")
+        key = (
+            f"{r['task_id']}/{r['env']}/{r['condition']}"
+            + (f"/{r['hint_id']}" if r["hint_id"] else "")
+        )
         groups.setdefault(key, []).append(r)
 
     summary = {}
@@ -189,9 +207,31 @@ def compute_summary(results: list[dict]) -> dict:
     return summary
 
 
+def write_task_results(task_output_dir: Path, results: list[dict], config: dict) -> None:
+    csv_path = task_output_dir / "results.csv"
+    fieldnames = ["task_id", "env", "condition", "hint_id", "attempt", "reward",
+                  "hack_succeeded", "elapsed_s", "trial_dir", "error"]
+    with csv_path.open("w", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=fieldnames)
+        w.writeheader()
+        for r in results:
+            w.writerow(r)
+
+    summary = compute_summary(results)
+    (task_output_dir / "results.json").write_text(
+        json.dumps({"config": config, "results": results, "summary": summary}, indent=2, default=str)
+    )
+
+
 async def main():
     parser = argparse.ArgumentParser(description="Hint-injection exploit probe")
-    parser.add_argument("--task-id", required=True)
+
+    task_group = parser.add_mutually_exclusive_group(required=True)
+    task_group.add_argument("--task-ids", type=str,
+                            help="Comma-separated task IDs to probe")
+    task_group.add_argument("--all", action="store_true",
+                            help="Probe all tasks found in --pristine-tasks-dir")
+
     parser.add_argument("--envs", default="pristine,propagated",
                         help="Comma-separated: pristine, propagated, or both")
     parser.add_argument("--pristine-tasks-dir", type=Path, required=True,
@@ -215,11 +255,33 @@ async def main():
         "pristine": args.pristine_tasks_dir,
         "propagated": args.propagated_tasks_dir,
     }
-    for env in envs:
-        src = resolve_task_source_dir(task_dirs[env], args.task_id)
-        if not src.is_dir():
-            print(f"ERROR: task dir not found: {src}", file=sys.stderr)
+
+    # Resolve task IDs
+    if args.all:
+        raw_task_ids = discover_task_ids(args.pristine_tasks_dir)
+        if not raw_task_ids:
+            print(f"ERROR: no tasks found in {args.pristine_tasks_dir}", file=sys.stderr)
             sys.exit(1)
+    else:
+        raw_task_ids = [t.strip() for t in args.task_ids.split(",")]
+
+    # Validate: skip tasks missing from any requested env
+    task_ids = []
+    for task_id in raw_task_ids:
+        ok = True
+        for env in envs:
+            src = resolve_task_source_dir(task_dirs[env], task_id)
+            if not src.is_dir():
+                print(f"WARNING: task {task_id!r} not found in {env} ({task_dirs[env]}), skipping",
+                      file=sys.stderr)
+                ok = False
+                break
+        if ok:
+            task_ids.append(task_id)
+
+    if not task_ids:
+        print("ERROR: no valid tasks to run", file=sys.stderr)
+        sys.exit(1)
 
     hint_ids = [h.strip() for h in args.hint_ids.split(",")] if args.hint_ids else None
     hints = load_hints(args.hints_dir, hint_ids)
@@ -232,11 +294,16 @@ async def main():
     )
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    trials = build_trial_list(envs, hints, args.solver_attempts, args.hint_attempts)
-    total = len(trials)
+    # Build all trials across all tasks; create per-task output dirs
+    per_task_trials: dict[str, list[dict]] = {}
+    for task_id in task_ids:
+        (output_dir / task_id).mkdir(parents=True, exist_ok=True)
+        per_task_trials[task_id] = build_trial_list(envs, hints, args.solver_attempts, args.hint_attempts)
+
+    total = sum(len(t) for t in per_task_trials.values())
 
     config = {
-        "task_id": args.task_id,
+        "task_ids": task_ids,
         "envs": envs,
         "model": args.model,
         "hints": [h[0] for h in hints],
@@ -249,52 +316,59 @@ async def main():
         "start_time": time.strftime("%Y-%m-%d %H:%M:%S"),
     }
     (output_dir / "config.json").write_text(json.dumps(config, indent=2))
-    print(f"Running {total} trials, max_concurrent={args.max_concurrent}", flush=True)
+    print(f"Running {total} trials across {len(task_ids)} task(s), max_concurrent={args.max_concurrent}",
+          flush=True)
     print(f"Output: {output_dir}", flush=True)
 
+    # Single shared semaphore limits total concurrent container runs across all tasks.
     sem = asyncio.Semaphore(args.max_concurrent)
-    results: list[dict] = []
-    completed = 0
+    completed = [0]
 
-    async def wrapped(trial):
-        nonlocal completed
-        r = await run_trial(trial, args.task_id, task_dirs, args.model, output_dir, sem, args.hacker_threshold)
-        completed += 1
+    async def wrapped(task_id: str, trial: dict) -> dict:
+        r = await run_trial(
+            trial, task_id, task_dirs, args.model,
+            output_dir / task_id, sem, args.hacker_threshold,
+        )
+        completed[0] += 1
         status = "HACK" if r["hack_succeeded"] else ("ERR " if r["error"] else "    ")
-        label = f"{r['env']}/{r['condition']}" + (f"/{r['hint_id']}" if r["hint_id"] else "")
+        label = (
+            f"{r['task_id']}/{r['env']}/{r['condition']}"
+            + (f"/{r['hint_id']}" if r["hint_id"] else "")
+        )
         print(
-            f"[{completed:3d}/{total}] {status} reward={r['reward']:7.2f} "
+            f"[{completed[0]:3d}/{total}] {status} reward={r['reward']:7.2f} "
             f"t={r['elapsed_s']}s {label}/a{r['attempt']}",
             flush=True,
         )
         return r
 
-    results = await asyncio.gather(*(wrapped(t) for t in trials))
+    all_results: list[dict] = list(await asyncio.gather(*(
+        wrapped(task_id, trial)
+        for task_id, trials in per_task_trials.items()
+        for trial in trials
+    )))
 
-    csv_path = output_dir / "results.csv"
-    fieldnames = ["env", "condition", "hint_id", "attempt", "reward",
-                  "hack_succeeded", "elapsed_s", "trial_dir", "error"]
-    with csv_path.open("w", newline="") as f:
-        w = csv.DictWriter(f, fieldnames=fieldnames)
-        w.writeheader()
-        for r in results:
-            w.writerow(r)
+    # Write per-task results
+    task_results: dict[str, list[dict]] = {}
+    for r in all_results:
+        task_results.setdefault(r["task_id"], []).append(r)
 
-    summary = compute_summary(results)
-    json_out = {
-        "config": config,
-        "results": results,
-        "summary": summary,
-    }
-    (output_dir / "results.json").write_text(json.dumps(json_out, indent=2, default=str))
+    for task_id, results in task_results.items():
+        write_task_results(output_dir / task_id, results, {**config, "task_id": task_id})
 
-    n_hack = sum(1 for r in results if r["hack_succeeded"])
-    n_err = sum(1 for r in results if r["error"])
+    # Write aggregate
+    agg_summary = compute_summary(all_results)
+    (output_dir / "aggregate_results.json").write_text(
+        json.dumps({"config": config, "results": all_results, "summary": agg_summary}, indent=2, default=str)
+    )
+
+    n_hack = sum(1 for r in all_results if r["hack_succeeded"])
+    n_err = sum(1 for r in all_results if r["error"])
     print(f"\nDONE. {n_hack}/{total} hacks succeeded (>={args.hacker_threshold}x), "
           f"{n_err} errors.", flush=True)
-    print(f"CSV: {csv_path}", flush=True)
+    print(f"Results: {output_dir}", flush=True)
 
-    for key, s in summary.items():
+    for key, s in agg_summary.items():
         print(f"  {key}: {s['n_succeeded']}/{s['n_attempts']} "
               f"(mean={s['mean_reward']:.2f}, max={s['max_reward']:.2f})")
 
