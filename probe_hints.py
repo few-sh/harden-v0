@@ -83,6 +83,7 @@ def build_trial_list(
     hints: list[tuple[str, str]],
     solver_attempts: int,
     hint_attempts: int,
+    kernelbench_mode: bool = True,
 ) -> list[dict]:
     trials = []
     for env in envs:
@@ -92,6 +93,7 @@ def build_trial_list(
                 "condition": "solver",
                 "hint_id": "",
                 "attempt": a,
+                "kernelbench_mode": kernelbench_mode,
             })
         for hint_id, hint_text in hints:
             for a in range(hint_attempts):
@@ -101,6 +103,7 @@ def build_trial_list(
                     "hint_id": hint_id,
                     "attempt": a,
                     "hint_text": hint_text,
+                    "kernelbench_mode": kernelbench_mode,
                 })
     return trials
 
@@ -149,9 +152,8 @@ async def run_trial(
         if condition == "solver":
             instruction = original_inst
         else:
-            # probe_hints targets KernelBench — use the KB framing.
             instruction = build_hinted_hacker_instruction(
-                original_inst, trial["hint_text"], kernelbench_mode=True
+                original_inst, trial["hint_text"], kernelbench_mode=trial["kernelbench_mode"]
             )
 
         replace_instruction(work_parent, task_id, instruction)
@@ -257,6 +259,8 @@ async def main():
     parser.add_argument("--hacker-threshold", type=float, default=DEFAULT_HACKER_THRESHOLD,
                         help="Reward threshold to count as hack success (default: 10.0)")
     parser.add_argument("--output-dir", type=Path, default=None)
+    parser.add_argument("--kernelbench-mode", action=argparse.BooleanOptionalAction, default=True,
+                        help="Use KernelBench framing for hacker instructions (default: true)")
     args = parser.parse_args()
 
     envs = [e.strip() for e in args.envs.split(",")]
@@ -313,7 +317,7 @@ async def main():
     per_task_trials: dict[str, list[dict]] = {}
     for task_id in task_ids:
         (output_dir / task_id).mkdir(parents=True, exist_ok=True)
-        per_task_trials[task_id] = build_trial_list(envs, hints, args.solver_attempts, args.hint_attempts)
+        per_task_trials[task_id] = build_trial_list(envs, hints, args.solver_attempts, args.hint_attempts, args.kernelbench_mode)
 
     total = sum(len(t) for t in per_task_trials.values())
 
@@ -326,6 +330,7 @@ async def main():
         "hint_attempts": args.hint_attempts,
         "max_concurrent": args.max_concurrent,
         "total_trials": total,
+        "kernelbench_mode": args.kernelbench_mode,
         "hack_threshold": args.hacker_threshold,
         "git_sha": get_git_sha(),
         "start_time": time.strftime("%Y-%m-%d %H:%M:%S"),
