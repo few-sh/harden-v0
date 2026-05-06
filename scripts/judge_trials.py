@@ -8,6 +8,7 @@ judges each trial using the harden-2 rubric, and writes per-task outputs.
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 import re
 from dataclasses import asdict, dataclass, replace
@@ -1106,10 +1107,23 @@ def parse_args() -> argparse.Namespace:
         nargs="*",
         help="Optional task ids to process. If omitted, all tasks are auto-discovered.",
     )
+    parser.add_argument(
+        "--max-concurrent",
+        type=int,
+        default=4,
+        help="Maximum number of tasks to judge concurrently (default: 4).",
+    )
     return parser.parse_args()
 
 
-def main() -> None:
+async def _process_task_async(
+    run_dir: Path, task_id: str, sem: asyncio.Semaphore
+) -> dict[str, Any]:
+    async with sem:
+        return await asyncio.to_thread(_process_task, run_dir, task_id)
+
+
+async def main() -> None:
     args = parse_args()
     run_dir = args.trial_dir.resolve()
     if not run_dir.is_dir():
@@ -1126,11 +1140,12 @@ def main() -> None:
         print("Loaded .env files:")
         for path in loaded_env_paths:
             print(f"  - {path}")
-    print(f"Tasks: {', '.join(task_ids)}")
+    print(f"Tasks: {', '.join(task_ids)}, max_concurrent={args.max_concurrent}")
 
-    summaries: list[dict[str, Any]] = []
-    for task_id in task_ids:
-        summaries.append(_process_task(run_dir, task_id))
+    sem = asyncio.Semaphore(args.max_concurrent)
+    summaries: list[dict[str, Any]] = list(
+        await asyncio.gather(*(_process_task_async(run_dir, task_id, sem) for task_id in task_ids))
+    )
 
     summary_payload = {
         "run_dir": str(run_dir),
@@ -1145,4 +1160,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
