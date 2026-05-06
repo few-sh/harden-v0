@@ -4,7 +4,7 @@ uv run ./probe_hints.py --all \
  --envs pristine,propagated \
  --solver-attempts 3 \
  --hint-attempts 1 \
- --include-nohint-hack \
+ --nohint-attempts 3 \
  --hacker-threshold 1.0 \
  --no-kernelbench-mode \
  --pristine-tasks-dir ~/truthserum/datasets/mixed_tag_hackable_terminalbench \
