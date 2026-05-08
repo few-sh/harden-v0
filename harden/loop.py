@@ -46,7 +46,7 @@ from .instructions import (
     build_targeted_replay_instruction,
 )
 from .pool import PoolCursor, PoolServer
-from .trajectory import extract_hack_summary
+from .trajectory import extract_hack_summary, llm_summarize_hack
 from .workspace import (
     append_to_instruction,
     apply_fixer_artifacts,
@@ -62,6 +62,23 @@ from .workspace import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _summarize_hack_attempt(cfg: "HardenConfig", trial_dir: Path) -> None:
+    """Generate LLM summary for a hack attempt; cached to <trial_dir>/agent/hack_summary.txt.
+
+    Uses ``cfg.summary_model`` (falls back to ``cfg.fixer_model`` when None).
+    Skipped entirely when the resolved model is empty.
+    """
+    raw_model = cfg.summary_model
+    if raw_model is None:
+        raw_model = cfg.fixer_model
+    if not raw_model:
+        return
+    try:
+        llm_summarize_hack(trial_dir, model=raw_model, reasoning_effort=cfg.reasoning_effort)
+    except Exception as exc:
+        logger.error("Hack summarization failed for %s: %s", trial_dir, exc, exc_info=True)
 
 
 def _hacker_privileged_enabled(cfg: HardenConfig, iteration: int) -> bool:
@@ -427,6 +444,7 @@ async def _harden_task_phases(
                     logger.info("Hacker attempt %d/%d: reward=%.2f (threshold=%.2f).",
                                 attempt + 1, config.hacker_retries, hack_reward, config.hack_threshold)
                     attempt_failed_trials.append(hacker_trial)
+                    _summarize_hack_attempt(config, hacker_trial)
 
             if not hack_succeeded:
                 logger.info("Hacker failed all %d attempts. Task is robust!", config.hacker_retries)

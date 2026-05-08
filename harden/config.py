@@ -41,6 +41,9 @@ class HardenConfig:
 
     hacker_model: str = DEFAULT_MODEL
     fixer_model: str = DEFAULT_MODEL
+    # Model used to LLM-summarize failed hack trajectories after each attempt.
+    # Defaults to fixer_model when None. Set to "" to disable LLM summarization.
+    summary_model: str | None = None
 
     # Thresholds (speedup in KB mode, reward otherwise; KB overrides to 10/0.5)
     hack_threshold: float = 1.0
