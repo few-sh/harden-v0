@@ -28,6 +28,7 @@ import logging
 from collections.abc import AsyncGenerator
 from pathlib import Path
 
+from . import durable
 from .agent import (
     read_verifier_output,
     run_fixer,
@@ -228,6 +229,11 @@ async def _harden_task_phases(
     pooled = config.pool_enabled and pool_server is not None
     original_dir = config.task_dir
     _validate_task_dir(original_dir)
+
+    # Job-cache namespace: a config fingerprint. All batch tasks share the
+    # same fingerprint (only task_id differs, and task_id is excluded), so
+    # this is idempotent across concurrent tasks.
+    durable.set_namespace(config.fingerprint())
 
     output = config.task_output_dir
     output.mkdir(parents=True, exist_ok=True)

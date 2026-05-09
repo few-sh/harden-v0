@@ -29,6 +29,8 @@ from harbor.models.job.config import (
 from harbor.models.trial.config import AgentConfig, EnvironmentConfig, VerifierConfig
 from harbor.models.trial.result import TrialResult
 
+from .durable import durable
+
 logger = logging.getLogger(__name__)
 
 # Defaults that match what works well with gemini-3.x thinking models
@@ -105,7 +107,7 @@ async def run_hacker(
     kernelbench_mode: bool = False,
 ) -> tuple[float, Path]:
     """Run a Terminus-2 hacker agent. Collects /solution for exploit inspection."""
-    return await _run_agent(
+    out = await _run_agent(
         task_parent_dir=task_parent_dir,
         agent_name=AgentName.TERMINUS_2,
         model_name=model_name,
@@ -123,6 +125,7 @@ async def run_hacker(
         image_name=image_name,
         kernelbench_mode=kernelbench_mode,
     )
+    return out["reward"], Path(out["trial_dir"])
 
 
 async def run_oracle_solver(
@@ -136,7 +139,7 @@ async def run_oracle_solver(
     kernelbench_mode: bool = False,
 ) -> tuple[float, Path]:
     """Run the oracle solver (copies reference.py → solution.py via solve.sh)."""
-    return await _run_agent(
+    out = await _run_agent(
         task_parent_dir=task_parent_dir,
         agent_name=AgentName.ORACLE,
         model_name=None,
@@ -148,6 +151,7 @@ async def run_oracle_solver(
         image_name=image_name,
         kernelbench_mode=kernelbench_mode,
     )
+    return out["reward"], Path(out["trial_dir"])
 
 
 async def run_solver_agent(
@@ -170,7 +174,7 @@ async def run_solver_agent(
     Verifier enabled — we need the reward signal. Solver may be privileged via
     the workspace layer (prepare_solver_environment injects /solution/ into the image).
     """
-    return await _run_agent(
+    out = await _run_agent(
         task_parent_dir=task_parent_dir,
         agent_name=AgentName.TERMINUS_2,
         model_name=model_name,
@@ -188,6 +192,7 @@ async def run_solver_agent(
         image_name=image_name,
         kernelbench_mode=kernelbench_mode,
     )
+    return out["reward"], Path(out["trial_dir"])
 
 
 async def run_fixer(
@@ -205,7 +210,7 @@ async def run_fixer(
     image_name: str | None = None,
 ) -> tuple[float, Path]:
     """Run the fixer agent (verifier disabled — we only care about committed files)."""
-    return await _run_agent(
+    out = await _run_agent(
         task_parent_dir=task_parent_dir,
         agent_name=AgentName.TERMINUS_2,
         model_name=model_name,
@@ -222,6 +227,7 @@ async def run_fixer(
         force_build=force_build,
         image_name=image_name,
     )
+    return out["reward"], Path(out["trial_dir"])
 
 
 def _load_base_config(harbor_config: Path | None) -> JobConfig:
@@ -237,6 +243,7 @@ def _load_base_config(harbor_config: Path | None) -> JobConfig:
     raise ValueError(f"Unsupported harbor config format: {harbor_config.suffix}")
 
 
+@durable(path="{jobs_dir.parent.parent}/.job_cache/{namespace}/{jobs_dir.parent.name}__{role}.json")
 async def _run_agent(
     task_parent_dir: Path,
     agent_name: AgentName,
@@ -254,7 +261,7 @@ async def _run_agent(
     force_build: bool = False,
     image_name: str | None = None,
     kernelbench_mode: bool = False,
-) -> tuple[float, Path]:
+) -> dict:
     job_name = f"{role}__{datetime.now().strftime('%Y%m%d_%H%M%S')}__{uuid4().hex[:8]}"
 
     base_config = _load_base_config(harbor_config)
@@ -310,7 +317,7 @@ async def _run_agent(
     reward = _extract_reward(trial_result, kernelbench_mode=kernelbench_mode)
     logger.info("[%s] Completed: reward=%.2f, trial_dir=%s", role, reward, trial_dir)
     _fire_job_finished_hook(trial_dir)
-    return reward, trial_dir
+    return {"reward": reward, "trial_dir": str(trial_dir)}
 
 
 def read_verifier_output(trial_dir: Path) -> str:

@@ -21,11 +21,30 @@ prompts, or vice versa.
 """
 
 import dataclasses
+import hashlib
+import json
 from dataclasses import dataclass, field
 from pathlib import Path
 
 DEFAULT_TASKS_DIR = Path("/lambda/nfs/reward-hacking/harbor/datasets/kernelbench")
 DEFAULT_MODEL = "gemini/gemini-3.1-pro-preview"
+
+# Mechanical fields that don't affect agent behavior — excluded from the
+# job-cache fingerprint. Anything else in HardenConfig is treated as
+# behavioral and contributes to the fingerprint. Bias toward NOT adding
+# new fields here unless you're certain they're mechanical: forgetting to
+# exclude something causes extra cache misses (visible, recoverable),
+# while forgetting to include something behavioral would silently return
+# stale cached results.
+_FINGERPRINT_EXCLUDE = frozenset({
+    "task_id",                  # per-task, not config identity
+    "output_dir", "tasks_dir",  # paths
+    "resume",                   # run-control flag
+    "retry_failed_prechecks",   # affects precheck_cache, not job cache
+    "image_name", "force_build",  # build mechanics
+    "pool_port", "pool_bootstrap_dir",  # pool plumbing (pool_enabled IS included)
+    "harbor_config",            # hashed by file content separately
+})
 
 
 @dataclass
@@ -125,6 +144,17 @@ class HardenConfig:
     @property
     def result_path(self) -> Path:
         return self.task_output_dir / "result.json"
+
+    def fingerprint(self) -> str:
+        raw = dataclasses.asdict(self)
+        payload = {k: v for k, v in raw.items() if k not in _FINGERPRINT_EXCLUDE}
+        if self.harbor_config is not None:
+            payload["_harbor_config_sha"] = hashlib.sha256(
+                self.harbor_config.read_bytes()
+            ).hexdigest()
+        return hashlib.sha256(
+            json.dumps(payload, sort_keys=True, default=str).encode()
+        ).hexdigest()[:16]
 
 
 @dataclass
