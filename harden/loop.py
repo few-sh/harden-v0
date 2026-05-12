@@ -28,6 +28,7 @@ import logging
 from collections.abc import AsyncGenerator
 from pathlib import Path
 
+from . import durable
 from .agent import (
     read_verifier_output,
     run_fixer,
@@ -116,7 +117,7 @@ async def _run_targeted_replay(
 
         reward, _ = await run_hacker(
             replay_parent, cfg.hacker_model, cfg.jobs_dir,
-            role=f"replay_iter{iteration}_a{attempt}",
+            role=f"replay_h{hack_iteration}_a{attempt}",
             max_turns=cfg.hacker_max_turns,
             temperature=cfg.temperature,
             max_tokens=cfg.max_tokens,
@@ -228,6 +229,11 @@ async def _harden_task_phases(
     pooled = config.pool_enabled and pool_server is not None
     original_dir = config.task_dir
     _validate_task_dir(original_dir)
+
+    # Job-cache namespace: a config fingerprint. All batch tasks share the
+    # same fingerprint (only task_id differs, and task_id is excluded), so
+    # this is idempotent across concurrent tasks.
+    durable.set_namespace(config.fingerprint())
 
     output = config.task_output_dir
     output.mkdir(parents=True, exist_ok=True)
@@ -357,6 +363,7 @@ async def _harden_task_phases(
         pool_advanced = False
         pool_log = ""
         previous_last_seen = ""
+        current_pool_sha = ""
         if pool_cursor is not None:
             pool_advanced, pool_log, previous_last_seen, current_pool_sha = (
                 pool_cursor.iter_start()
@@ -427,7 +434,7 @@ async def _harden_task_phases(
                         hacker_parent,
                         config.hacker_model,
                         config.jobs_dir,
-                        role=f"hacker_iter{iteration}_a{attempt}",
+                        role=f"hacker_h{hack_iterations - 1}_a{attempt}",
                         max_turns=config.hacker_max_turns,
                         temperature=config.temperature,
                         max_tokens=config.max_tokens,
@@ -486,13 +493,21 @@ async def _harden_task_phases(
             pool_upstream_url=pool_server.upstream_url if pooled else None,
         )
 
+        # Role string: real iters use a stable hack-iter counter so resume
+        # cache hits across runs; pool-sync iters embed both pool SHAs so
+        # the cache always misses (live pool state can't be replayed).
+        fixer_role = (
+            f"fixer_pool_{previous_last_seen[:8]}_{current_pool_sha[:8]}"
+            if pool_advanced
+            else f"fixer_h{hack_iterations - 1}"
+        )
         # Fixer always modifies the Dockerfile → force_build with harden image.
         async with semaphore:
             _, fixer_trial = await run_fixer(
                 fixer_parent,
                 config.fixer_model,
                 config.jobs_dir,
-                role=f"fixer_iter{iteration}",
+                role=fixer_role,
                 max_turns=config.fixer_max_turns,
                 temperature=config.temperature,
                 max_tokens=config.max_tokens,
@@ -588,11 +603,17 @@ async def _harden_task_phases(
                         validate_modified = True
 
                 solver_needs_rebuild = validate_modified or hardened_dirty
+                # Same role-key strategy as the fixer above.
+                solver_validate_role = (
+                    f"solver_validate_pool_{previous_last_seen[:8]}_{current_pool_sha[:8]}"
+                    if pool_advanced
+                    else f"solver_validate_h{hack_iterations - 1}"
+                )
                 async with semaphore:
                     solver_reward, solver_trial = await _run_solver(
                         config,
                         solver_parent,
-                        role=f"solver_validate_iter{iteration}",
+                        role=solver_validate_role,
                         force_build=solver_needs_rebuild,
                         image_name=harden_image if solver_needs_rebuild else None,
                     )
