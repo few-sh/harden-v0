@@ -491,6 +491,9 @@ def _detect_fixer_iteration(job_name: str) -> int | None:
     m = re.match(r"^fixer_iter(\d+)__", job_name)
     if m:
         return int(m.group(1))
+    m = re.match(r"^fixer_h(\d+)__", job_name)
+    if m:
+        return int(m.group(1))
     return None
 
 
@@ -573,6 +576,8 @@ def _detect_mode(job_name: str) -> AttackerModeName | None:
         (re.compile(r"^replay_iter\d+_a\d+__"), "targeted-replay"),
         (re.compile(r"^hacker_general_live__"), "general-hacker"),
         (re.compile(r"^targeted_replay_live__"), "targeted-replay"),
+        (re.compile(r"^hacker_h\d+_a\d+__"), "general-hacker"),
+        (re.compile(r"^replay_h\d+_a\d+__"), "targeted-replay"),
     ]
     for pattern, mode in patterns:
         if pattern.match(job_name):
@@ -594,6 +599,10 @@ def _job_sort_key(job_name: str) -> tuple[int, int, int, str, str]:
     if m:
         return (0, int(m.group(1)), int(m.group(2)), m.group(3), job_name)
 
+    m = re.match(r"^(?:hacker|replay)_h(\d+)_a(\d+)__(\d{8}_\d{6})__", job_name)
+    if m:
+        return (0, int(m.group(1)), int(m.group(2)), m.group(3), job_name)
+
     m = re.match(r"^(?:hacker_general_live|targeted_replay_live)__(\d{8}_\d{6})__", job_name)
     if m:
         return (1, 0, 0, m.group(1), job_name)
@@ -606,7 +615,15 @@ def _fixer_job_sort_key(job_name: str) -> tuple[int, int, str, str]:
     if m:
         return (0, int(m.group(1)), m.group(2), job_name)
 
+    m = re.match(r"^fixer_h(\d+)__(\d{8}_\d{6})__", job_name)
+    if m:
+        return (0, int(m.group(1)), m.group(2), job_name)
+
     m = re.match(r"^fixer_live__(\d{8}_\d{6})__", job_name)
+    if m:
+        return (1, 0, m.group(1), job_name)
+
+    m = re.match(r"^fixer_pool_[0-9a-f]+_[0-9a-f]+__(\d{8}_\d{6})__", job_name)
     if m:
         return (1, 0, m.group(1), job_name)
 
@@ -809,7 +826,13 @@ def _collect_fixer_trials(task_dir: Path) -> list[tuple[Path, Path, int | None]]
 
     discovered: list[tuple[Path, Path, int | None]] = []
     for job_dir in sorted([p for p in jobs_dir.iterdir() if p.is_dir()], key=lambda p: _fixer_job_sort_key(p.name)):
-        if not (job_dir.name.startswith("fixer_iter") or job_dir.name.startswith("fixer_live")):
+        name = job_dir.name
+        if not (
+            name.startswith("fixer_iter")
+            or name.startswith("fixer_live")
+            or re.match(r"^fixer_h\d+__", name)
+            or name.startswith("fixer_pool_")
+        ):
             continue
         iteration = _detect_fixer_iteration(job_dir.name)
         for trial_dir in _iter_trial_dirs(job_dir):
