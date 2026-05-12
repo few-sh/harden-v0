@@ -467,6 +467,7 @@ async def _harden_task_phases(
             failed_hack_trials = []
             logger.info("Hacker succeeded (reward=%.2f >= %.2f). Extracting trajectory.",
                         hack_reward, config.hack_threshold)
+            _summarize_hack_attempt(config, hacker_trial)
             hack_summary = extract_hack_summary(hacker_trial)
 
         iter_info["hack_reward"] = hack_reward if not pool_advanced else None
