@@ -303,6 +303,30 @@ def is_ancestor(bare_path: Path, ancestor: str, descendant: str) -> bool:
     return proc.returncode == 0
 
 
+def range_only_authored_by(
+    bare_path: Path, since: str, until: str, expected_author: str,
+) -> bool:
+    """True iff every commit in `since..until` has `expected_author` as its author name.
+
+    Returns False on empty range or git error — caller should treat as a real
+    peer advance in either case (conservative: better to run a pool-sync iter
+    we didn't strictly need than to silently swallow a peer commit).
+    """
+    proc = _run(
+        [
+            "git", "--git-dir", str(bare_path),
+            "log", f"{since}..{until}", "--format=%an",
+        ],
+        check=False,
+    )
+    if proc.returncode != 0:
+        return False
+    authors = [a for a in proc.stdout.splitlines() if a]
+    if not authors:
+        return False
+    return all(a == expected_author for a in authors)
+
+
 def get_latest_own_commit(bare_path: Path, task_id: str) -> str | None:
     """Return the SHA of the most recent pool commit authored by this task's fixer.
 
@@ -389,10 +413,30 @@ class PoolCursor:
         Does NOT persist — caller invokes `persist()` at commit points.
         A fresh task (previous is None) always reports an advance so iter 0
         catches up to the seeded defense.
+
+        Exception: if the pool advanced but every new commit is this task's
+        own push (e.g., a prior iter pushed but its fix was rejected locally,
+        so `advance_to_own_commit_if_newer` never fired), there's nothing peer
+        to integrate. Treat as not-advanced (run hacker) and persist the new
+        last_seen immediately so we don't re-evaluate the same range next iter.
         """
         current = get_pool_head(self._pool_server.bare_path)
         previous = self._sha
         advanced = (previous is None) or (current != previous)
+        if (
+            advanced and previous and range_only_authored_by(
+                self._pool_server.bare_path, previous, current,
+                f"harden-fixer-{self._task_id}",
+            )
+        ):
+            logger.info(
+                "Pool advanced %s..%s but every commit is this task's own — "
+                "running hacker.",
+                previous[:8], current[:8],
+            )
+            self._sha = current
+            write_last_seen_sha(self._task_output_dir, current)
+            return False, "", previous, current
         log = (
             get_pool_log_since(self._pool_server.bare_path, previous)
             if advanced else ""
