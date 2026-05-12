@@ -45,7 +45,7 @@ def _chunk_text_by_lines(text: str, max_chars: int) -> list[str]:
     return chunks
 
 
-def llm_summarize_hack(
+async def llm_summarize_hack(
     trial_dir: Path,
     model: str,
     reasoning_effort: str | None = None,
@@ -179,7 +179,7 @@ def llm_summarize_hack(
             if reasoning_effort is not None:
                 completion_kwargs["reasoning_effort"] = reasoning_effort
 
-            response = litellm.completion(**completion_kwargs)
+            response = await litellm.acompletion(**completion_kwargs)
             prior = HackSummaryResponse.model_validate_json(
                 response.choices[0].message.content
             )

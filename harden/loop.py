@@ -65,7 +65,7 @@ from .workspace import (
 logger = logging.getLogger(__name__)
 
 
-def _summarize_hack_attempt(cfg: "HardenConfig", trial_dir: Path) -> None:
+async def _summarize_hack_attempt(cfg: "HardenConfig", trial_dir: Path) -> None:
     """Generate LLM summary for a hack attempt; cached to <trial_dir>/agent/hack_summary.txt.
 
     Uses ``cfg.summary_model`` (falls back to ``cfg.fixer_model`` when None).
@@ -77,7 +77,7 @@ def _summarize_hack_attempt(cfg: "HardenConfig", trial_dir: Path) -> None:
     if not raw_model:
         return
     try:
-        llm_summarize_hack(trial_dir, model=raw_model, reasoning_effort=cfg.reasoning_effort)
+        await llm_summarize_hack(trial_dir, model=raw_model, reasoning_effort=cfg.reasoning_effort)
     except Exception as exc:
         logger.error("Hack summarization failed for %s: %s", trial_dir, exc, exc_info=True)
 
@@ -451,7 +451,7 @@ async def _harden_task_phases(
                     logger.info("Hacker attempt %d/%d: reward=%.2f (threshold=%.2f).",
                                 attempt + 1, config.hacker_retries, hack_reward, config.hack_threshold)
                     attempt_failed_trials.append(hacker_trial)
-                    _summarize_hack_attempt(config, hacker_trial)
+                    await _summarize_hack_attempt(config, hacker_trial)
 
             if not hack_succeeded:
                 logger.info("Hacker failed all %d attempts. Task is robust!", config.hacker_retries)
@@ -467,7 +467,7 @@ async def _harden_task_phases(
             failed_hack_trials = []
             logger.info("Hacker succeeded (reward=%.2f >= %.2f). Extracting trajectory.",
                         hack_reward, config.hack_threshold)
-            _summarize_hack_attempt(config, hacker_trial)
+            await _summarize_hack_attempt(config, hacker_trial)
             hack_summary = extract_hack_summary(hacker_trial)
 
         iter_info["hack_reward"] = hack_reward if not pool_advanced else None
