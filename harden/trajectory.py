@@ -66,7 +66,10 @@ def llm_summarize_hack(
     """
     cache_path = trial_dir / "agent" / _SUMMARY_CACHE_FILE
     if cache_path.exists():
+        logger.info("Found cached LLM hack summary at %s; returning it.", cache_path)
         return cache_path.read_text()
+
+    logger.info("Generating LLM hack summary for trial at %s using model %s", trial_dir, model)
 
     raw = extract_hack_summary(trial_dir)
     verifier_path_stdout = trial_dir / "verifier" / "test-stdout.txt"
@@ -206,6 +209,7 @@ def llm_summarize_hack(
 
         try:
             cache_path.write_text(summary)
+            logger.info("Wrote LLM hack summary to %s", cache_path)
         except Exception as exc:
             logger.warning("Could not cache hack summary to %s: %s", cache_path, exc)
 
