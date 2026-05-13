@@ -147,6 +147,12 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--retry-failed-prechecks", action="store_true",
                         help="Re-run cached failed prechecks live instead of reusing their result")
 
+    parser.add_argument("--no-journal", dest="journal_enabled", action="store_false",
+                        help="Disable the cross-iteration hacker+fixer journal. "
+                             "Default: enabled. Use for ablation runs.")
+    parser.add_argument("--journal-compact-max-iters", type=int, default=10,
+                        help="How many recent iter compact entries to inline in journal.md (default 10).")
+
     parser.add_argument("--log-level", default="INFO",
                         choices=["DEBUG", "INFO", "WARNING", "ERROR"],
                         help="Logging level (default: INFO)")
@@ -196,6 +202,8 @@ def _config_kwargs(args: argparse.Namespace) -> dict:
         pool_integrate_bootstrap=args.pool_integrate_bootstrap,
         resume=args.resume,
         retry_failed_prechecks=args.retry_failed_prechecks,
+        journal_enabled=args.journal_enabled,
+        journal_compact_max_iters=args.journal_compact_max_iters,
     )
 
 

@@ -159,6 +159,53 @@ def prepare_hacker_environment(
     dockerfile.write_text(content)
 
 
+def prepare_journal_mount(
+    working_copy_parent: Path,
+    task_id: str,
+    task_output_dir: Path,
+) -> bool:
+    """Mount `<task_output_dir>/journal/` + `journal.md` at /journal/ (read-only).
+
+    Called by all three agents (hacker, privileged hacker, fixer) before the
+    Docker build so the journal is available for re-reading mid-trajectory.
+    The compact entry files (`iter_<N>_compact.md`) are excluded — they're
+    bookkeeping for journal.md regeneration, not user-facing content.
+
+    Returns True if mounted, False if there's no journal yet (iter 0).
+    """
+    task_dir = working_copy_parent / task_id
+    env_dir = task_dir / "environment"
+    dockerfile = env_dir / "Dockerfile"
+    if not dockerfile.exists():
+        return False
+
+    src_dir = task_output_dir / "journal"
+    src_md = task_output_dir / "journal.md"
+    if not src_dir.is_dir() and not src_md.is_file():
+        return False
+
+    dest = env_dir / "journal_mount"
+    if dest.exists():
+        shutil.rmtree(dest)
+    dest.mkdir()
+
+    if src_dir.is_dir():
+        for item in src_dir.iterdir():
+            if item.is_file() and not item.name.endswith("_compact.md"):
+                shutil.copy2(item, dest / item.name)
+    if src_md.is_file():
+        shutil.copy2(src_md, dest / "journal.md")
+
+    content = dockerfile.read_text()
+    content += (
+        "\n# Added by harden: mount cross-iteration journal\n"
+        "COPY journal_mount/ /journal/\n"
+        "RUN chmod -R a-w /journal/\n"
+    )
+    dockerfile.write_text(content)
+    return True
+
+
 def prepare_privileged_hacker_environment(
     hacker_parent: Path,
     task_id: str,
@@ -189,7 +236,7 @@ def prepare_privileged_hacker_environment(
     env_copy = eval_env_dir / "environment"
     env_copy.mkdir()
     for item in env_dir.iterdir():
-        if item.name == "eval_env":
+        if item.name in ("eval_env", "journal_mount"):
             continue
         dest = env_copy / item.name
         if item.is_dir():
@@ -297,7 +344,7 @@ def prepare_fixer_environment(
     for item in env_dir.iterdir():
         if item.name in ("tests", "solution", "environment_copy",
                          "previous_attempt", "previous_solver",
-                         "previous_hacks", "eval_env",
+                         "previous_hacks", "eval_env", "journal_mount",
                          "harden-entrypoint.sh"):
             continue
         dest = environment_copy_dir / item.name

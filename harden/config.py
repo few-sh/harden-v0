@@ -123,6 +123,16 @@ class HardenConfig:
     # task-agnostic defense scaffold.
     pool_integrate_bootstrap: bool = False
 
+    # Cross-iteration journal — per-task hacker+fixer memory persisted at
+    # <task_output_dir>/journal.md + <task_output_dir>/journal/. When True,
+    # the loop summarizes every iter into the journal and injects it into
+    # the hacker, fixer, and replay prompts. Use journal_enabled=False for
+    # ablation runs that match prior no-journal behavior.
+    journal_enabled: bool = True
+    # Maximum number of recent iters' compact entries inlined into journal.md.
+    # Older iters remain in /journal/iter_<N>.md for drill-down.
+    journal_compact_max_iters: int = 10
+
     # If True, preserve an existing output/hardened/<task>/ from a prior run.
     resume: bool = False
 

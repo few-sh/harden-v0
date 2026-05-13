@@ -28,7 +28,7 @@ import logging
 from collections.abc import AsyncGenerator
 from pathlib import Path
 
-from . import durable
+from . import durable, journal
 from .agent import (
     read_verifier_output,
     run_fixer,
@@ -47,7 +47,7 @@ from .instructions import (
     build_targeted_replay_instruction,
 )
 from .pool import PoolCursor, PoolServer
-from .trajectory import extract_hack_summary, llm_summarize_hack
+from .trajectory import extract_fix_summary, extract_hack_summary, llm_summarize_fix, llm_summarize_hack
 from .workspace import (
     append_to_instruction,
     apply_fixer_artifacts,
@@ -56,6 +56,7 @@ from .workspace import (
     extract_fixer_artifacts,
     prepare_fixer_environment,
     prepare_hacker_environment,
+    prepare_journal_mount,
     prepare_privileged_hacker_environment,
     prepare_solver_environment,
     replace_instruction,
@@ -65,21 +66,100 @@ from .workspace import (
 logger = logging.getLogger(__name__)
 
 
+def _resolved_summary_model(cfg: "HardenConfig") -> str:
+    """Pick the model used for trajectory summaries (hack + fix) and the ledger.
+
+    ``cfg.summary_model`` overrides; falls back to ``cfg.fixer_model``. Empty
+    string disables LLM summarization entirely (returns "").
+    """
+    raw_model = cfg.summary_model
+    if raw_model is None:
+        raw_model = cfg.fixer_model
+    return raw_model or ""
+
+
 async def _summarize_hack_attempt(cfg: "HardenConfig", trial_dir: Path) -> None:
     """Generate LLM summary for a hack attempt; cached to <trial_dir>/agent/hack_summary.txt.
 
     Uses ``cfg.summary_model`` (falls back to ``cfg.fixer_model`` when None).
     Skipped entirely when the resolved model is empty.
     """
-    raw_model = cfg.summary_model
-    if raw_model is None:
-        raw_model = cfg.fixer_model
-    if not raw_model:
+    model = _resolved_summary_model(cfg)
+    if not model:
         return
     try:
-        await llm_summarize_hack(trial_dir, model=raw_model, reasoning_effort=cfg.reasoning_effort)
+        await llm_summarize_hack(trial_dir, model=model, reasoning_effort=cfg.reasoning_effort)
     except Exception as exc:
         logger.error("Hack summarization failed for %s: %s", trial_dir, exc, exc_info=True)
+
+
+async def _summarize_fix_attempt(
+    cfg: "HardenConfig", trial_dir: Path, outcome: str,
+) -> None:
+    """Generate LLM summary for a fix attempt; cached to <trial_dir>/agent/fix_summary.txt.
+
+    Same model-resolution rules as the hack summarizer. ``outcome`` is the
+    loop-determined verdict (fixed / fix_failed / replay_broke_fix / etc.)
+    and gets woven into the prompt as authoritative.
+    """
+    model = _resolved_summary_model(cfg)
+    if not model:
+        return
+    try:
+        await llm_summarize_fix(
+            trial_dir, model=model, reasoning_effort=cfg.reasoning_effort, outcome=outcome,
+        )
+    except Exception as exc:
+        logger.error("Fix summarization failed for %s: %s", trial_dir, exc, exc_info=True)
+
+
+async def _record_iter_in_journal(
+    cfg: "HardenConfig",
+    iteration: int,
+    outcome: str,
+    fix_applied: bool,
+    hack_reward: float | None,
+    hack_summary: str | None,
+    fixer_trial: Path | None,
+    notes: str | None = None,
+) -> None:
+    """Append one iter to the journal.
+
+    ``hack_summary`` is the already-extracted markdown (the loop has it in
+    scope via `extract_hack_summary(hacker_trial)` at each call site, or
+    the reused-hack tuple). Pass None on pool-sync iters and when no hack
+    ran. ``fixer_trial`` is summarized inline (the fix summary isn't cached
+    upstream).
+
+    Only the accepted-fix path (``fix_applied=True``) triggers a ledger
+    refresh — reverted/replay-broken iters write the per-iter file but
+    don't modify ``defenses_in_force.md``. Errors are logged and swallowed:
+    journal failures must never break the loop.
+    """
+    if not cfg.journal_enabled:
+        return
+    try:
+        fix_summary: str | None = None
+        if fixer_trial is not None:
+            await _summarize_fix_attempt(cfg, fixer_trial, outcome)
+            fix_summary = extract_fix_summary(fixer_trial)
+
+        ledger_model = _resolved_summary_model(cfg) if fix_applied else ""
+        await journal.append_iter(
+            cfg.task_output_dir,
+            iteration=iteration,
+            outcome=outcome,
+            fix_applied=fix_applied,
+            hack_reward=hack_reward,
+            hack_summary=hack_summary,
+            fix_summary=fix_summary,
+            notes=notes,
+            ledger_model=ledger_model or None,
+            reasoning_effort=cfg.reasoning_effort,
+            compact_max_iters=cfg.journal_compact_max_iters,
+        )
+    except Exception as exc:
+        logger.error("Journal recording failed for iter %d: %s", iteration, exc, exc_info=True)
 
 
 def _hacker_privileged_enabled(cfg: HardenConfig, iteration: int) -> bool:
@@ -101,19 +181,24 @@ async def _run_targeted_replay(
 ) -> float:
     """Up to cfg.replay_retries attempts; returns max reward observed."""
     best = 0.0
+    journal_text = journal.read_compact(cfg.task_output_dir) if cfg.journal_enabled else None
     for attempt in range(cfg.replay_retries):
         replay_parent = create_working_copy(hardened_task_dir, output / f"replay_task_iter{iteration}")
         apply_fixer_artifacts(replay_parent / cfg.task_id, fixer_trial)
         replace_instruction(
             replay_parent, cfg.task_id,
             build_targeted_replay_instruction(
-                original_instruction, hack_summary, kernelbench_mode=cfg.kernelbench_mode
+                original_instruction, hack_summary,
+                kernelbench_mode=cfg.kernelbench_mode,
+                journal_text=journal_text,
             ),
         )
         if _hacker_privileged_enabled(cfg, hack_iteration) and prepare_privileged_hacker_environment(
             replay_parent, cfg.task_id
         ):
             append_to_instruction(replay_parent, cfg.task_id, HACKER_PRIVILEGED_HINT)
+        if cfg.journal_enabled:
+            prepare_journal_mount(replay_parent, cfg.task_id, cfg.task_output_dir)
 
         reward, _ = await run_hacker(
             replay_parent, cfg.hacker_model, cfg.jobs_dir,
@@ -407,12 +492,18 @@ async def _harden_task_phases(
             hack_succeeded = False
             attempt_failed_trials: list[Path] = []
             hack_reward = 0.0
+            journal_text = (
+                journal.read_compact(config.task_output_dir)
+                if config.journal_enabled else None
+            )
             async with semaphore:
                 for attempt in range(config.hacker_retries):
                     hacker_parent = create_working_copy(hardened_task_dir, output / "hacker_task")
                     original_instruction = (original_dir / "instruction.md").read_text()
                     hacker_instruction = build_hacker_instruction(
-                        original_instruction, kernelbench_mode=config.kernelbench_mode
+                        original_instruction,
+                        kernelbench_mode=config.kernelbench_mode,
+                        journal_text=journal_text,
                     )
                     replace_instruction(hacker_parent, config.task_id, hacker_instruction)
 
@@ -428,7 +519,15 @@ async def _harden_task_phases(
                         prepare_hacker_environment(hacker_parent, config.task_id, all_failed)
                         append_to_instruction(hacker_parent, config.task_id, HACKER_FEEDBACK_HINT)
 
-                    hacker_dockerfile_modified = hacker_privileged_modified or hacker_feedback_modified
+                    journal_modified = False
+                    if config.journal_enabled:
+                        journal_modified = prepare_journal_mount(
+                            hacker_parent, config.task_id, config.task_output_dir,
+                        )
+
+                    hacker_dockerfile_modified = (
+                        hacker_privileged_modified or hacker_feedback_modified or journal_modified
+                    )
                     hacker_needs_rebuild = hacker_dockerfile_modified or hardened_dirty
                     hack_reward, hacker_trial = await run_hacker(
                         hacker_parent,
@@ -461,6 +560,15 @@ async def _harden_task_phases(
                 result["status"] = "robust"
                 result["hardened_dir"] = str(hardened_task_dir)
                 _save_result(config.result_path, result)
+                # Cache-warm the failed-trial summary so the journal shows
+                # what the hacker tried even on the robust terminus.
+                await _summarize_hack_attempt(config, hacker_trial)
+                await _record_iter_in_journal(
+                    config, iteration=iteration, outcome="hacker_failed",
+                    fix_applied=False, hack_reward=hack_reward,
+                    hack_summary=extract_hack_summary(hacker_trial), fixer_trial=None,
+                    notes=f"Hacker failed all {config.hacker_retries} attempts; task is robust.",
+                )
                 result_out.append(result)
                 return  # done — exits before hack yield
 
@@ -474,6 +582,10 @@ async def _harden_task_phases(
         original_instruction = (original_dir / "instruction.md").read_text()
 
         # ── FIX PHASE ─────────────────────────────────────────────────────────
+        fixer_journal_text = (
+            journal.read_compact(config.task_output_dir)
+            if config.journal_enabled else None
+        )
         fixer_instruction = build_fixer_instruction(
             original_instruction, hack_summary, previous_failure,
             has_previous_attempt=previous_fixer_trial is not None,
@@ -486,6 +598,7 @@ async def _harden_task_phases(
             last_seen_sha=previous_last_seen,
             task_id=config.task_id,
             iteration=iteration,
+            journal_text=fixer_journal_text,
         )
         fixer_parent = create_working_copy(hardened_task_dir, output / "fixer_task")
         replace_instruction(fixer_parent, config.task_id, fixer_instruction)
@@ -493,6 +606,8 @@ async def _harden_task_phases(
             fixer_parent, config.task_id, previous_fixer_trial, previous_solver_trial,
             pool_upstream_url=pool_server.upstream_url if pooled else None,
         )
+        if config.journal_enabled:
+            prepare_journal_mount(fixer_parent, config.task_id, config.task_output_dir)
 
         # Role string: real iters use a stable hack-iter counter so resume
         # cache hits across runs; pool-sync iters embed both pool SHAs so
@@ -585,6 +700,12 @@ async def _harden_task_phases(
                     result["status"] = "robust"
                     result["hardened_dir"] = str(hardened_task_dir)
                     _save_result(config.result_path, result)
+                    await _record_iter_in_journal(
+                        config, iteration=iteration, outcome="legitimate",
+                        fix_applied=False, hack_reward=hack_reward,
+                        hack_summary=hack_summary, fixer_trial=fixer_trial,
+                        notes=f"Confirmed legitimate after {config.legitimate_threshold} consecutive flags.",
+                    )
                     result_out.append(result)
                     return  # done — exits before validate yield
                 reuse_hack = None
@@ -594,6 +715,11 @@ async def _harden_task_phases(
                 result["iterations"].append(iter_info)
                 _save_result(config.result_path, result)
                 _iter_appended = True
+                await _record_iter_in_journal(
+                    config, iteration=iteration, outcome="legitimate",
+                    fix_applied=False, hack_reward=hack_reward,
+                    hack_summary=hack_summary, fixer_trial=fixer_trial,
+                )
                 # fall through to validate yield (no container work needed)
 
             else:  # "applied"
@@ -699,6 +825,16 @@ async def _harden_task_phases(
             iter_info.setdefault("outcome", "fixed" if fix_applied else "fix_failed")
             result["iterations"].append(iter_info)
             _save_result(config.result_path, result)
+            # Journal: record the iter unless this was a pool-sync (no real
+            # hack to compare against). The plan reserves pool-sync iters for
+            # the pool channel; intra-task journal stays focused on real
+            # attack/defense rounds.
+            if not pool_advanced:
+                await _record_iter_in_journal(
+                    config, iteration=iteration, outcome=iter_info["outcome"],
+                    fix_applied=fix_applied, hack_reward=hack_reward,
+                    hack_summary=hack_summary, fixer_trial=fixer_trial,
+                )
 
     # while loop exhausted without a terminal break → max_iterations
     result["status"] = "max_iterations"
