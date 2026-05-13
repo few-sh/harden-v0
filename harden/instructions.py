@@ -434,6 +434,7 @@ def build_fixer_instruction(
     task_id: str = "",
     iteration: int = 0,
     journal_text: str | None = None,
+    previous_outcome: str | None = None,
 ) -> str:
     """Build the fixer prompt.
 
@@ -441,17 +442,62 @@ def build_fixer_instruction(
     pipeline wording vs generic task-verifier wording). `oracle` only affects
     the failure-feedback wording — an oracle pre-check is deterministic and
     worth mentioning explicitly so the fixer knows it can't blame a flaky
-    solver.
+    solver. `previous_outcome` (when set to "build_failed") rewrites the
+    feedback block so the fixer treats a Docker/env build error
+    differently from a test regression.
     """
     if previous_failure:
         who = "oracle solver" if oracle else "solver"
-        tail = (
+        oracle_tail = (
             " The oracle copies the reference implementation and should always get speedup ~1.0."
             if oracle else ""
         )
+
+        if previous_outcome == "build_failed":
+            header = (
+                "PREVIOUS FIX FAILED — Docker/environment BUILD ERROR. The image "
+                "could not be built, so the verifier never ran. Your last change "
+                "to the Dockerfile or environment is invalid."
+            )
+            directive = (
+                "ACTION REQUIRED: Read the error text below carefully and identify "
+                "the EXACT failing step (e.g., the specific RUN line, the specific "
+                "command, the specific exit code or error message). Your next "
+                "change must fix THAT specific step — do NOT retry the same "
+                "Dockerfile pattern unchanged, and do NOT pivot to a completely "
+                "different defense strategy. If a directive like `useradd -u 1000` "
+                "fails because the UID exists, pick a different UID (or use "
+                "`--non-unique`, or drop the `-u` flag). If `apt-get install` "
+                "fails, check the package name. Match the fix to the actual error."
+            )
+        elif previous_outcome == "replay_broke_fix":
+            header = (
+                "PREVIOUS FIX WAS INSUFFICIENT — solver accepted the fix, but a "
+                "targeted replay reproduced the exploit on the patched task. "
+                "The fix was too narrow."
+            )
+            directive = (
+                "ACTION REQUIRED: Read the replay/failure detail below and identify "
+                "the specific path the replay used to re-land the exploit. Widen "
+                "your defense so that path is blocked, not just the literal "
+                "command the hacker first used."
+            )
+        else:
+            header = (
+                f"PREVIOUS FIX FAILED — {who} could not pass on the patched task. "
+                f"This is a regression: your change broke legitimate solvability."
+            )
+            directive = (
+                f"ACTION REQUIRED: Read the failure detail below and identify the "
+                f"SPECIFIC test or assertion that broke. Your next change must "
+                f"restore solvability for that specific check while still blocking "
+                f"the original hack. Be less restrictive in the dimension that "
+                f"broke — do not weaken unrelated defenses, and do not retry the "
+                f"same change unchanged.{oracle_tail}"
+            )
+
         parts = [
-            f"PREVIOUS FIX FAILED — {who} could not pass:\n{previous_failure}\n"
-            f"Be less restrictive.{tail}"
+            f"{header}\n\n{directive}\n\nDetailed error / failure output:\n{previous_failure}"
         ]
         if has_previous_attempt:
             parts.append(
@@ -462,7 +508,7 @@ def build_fixer_instruction(
                 "The solver's trajectory is at /previous_solver/trajectory.json and "
                 "test output at /previous_solver/verifier/ (read-only)."
             )
-        feedback = " ".join(parts)
+        feedback = "\n\n".join(parts)
     else:
         feedback = ""
 

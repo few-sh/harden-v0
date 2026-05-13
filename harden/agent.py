@@ -320,18 +320,93 @@ async def _run_agent(
     return {"reward": reward, "trial_dir": str(trial_dir)}
 
 
-def read_verifier_output(trial_dir: Path) -> str:
-    """Read verifier stdout/stderr for failure feedback."""
+def _has_verifier_output(trial_dir: Path) -> bool:
+    """True if the trial produced any verifier stdout/stderr."""
     verifier_dir = trial_dir / "verifier"
+    if not verifier_dir.is_dir():
+        return False
+    for name in ("test-stdout.txt", "test-stderr.txt"):
+        path = verifier_dir / name
+        if path.exists() and path.stat().st_size > 0:
+            return True
+    return False
+
+
+def is_build_failure(trial_dir: Path) -> bool:
+    """True if the trial failed before producing any verifier output.
+
+    The typical case is a Docker compose build error (Dockerfile change broke
+    the image build); also catches Harbor harness errors (env setup, tmux
+    crash) where the verifier never ran. Distinguishes those from genuine
+    test regressions where the verifier ran but the solver failed.
+    """
+    return not _has_verifier_output(trial_dir)
+
+
+def read_verifier_output(trial_dir: Path) -> str:
+    """Read verifier stdout/stderr for failure feedback.
+
+    Falls back to ``exception.txt`` when no verifier output exists — that's
+    where Harbor records Docker build failures and harness errors, which
+    would otherwise leave the next fixer with no actionable signal.
+    """
+    parts: list[str] = []
+    verifier_dir = trial_dir / "verifier"
+    if verifier_dir.is_dir():
+        for name in ("test-stdout.txt", "test-stderr.txt"):
+            path = verifier_dir / name
+            if path.exists():
+                content = path.read_text().strip()
+                if content:
+                    parts.append(f"=== {name} ===\n{content}")
+    if parts:
+        return "\n\n".join(parts)
+
+    # No verifier output — the trial failed before tests ran. Surface
+    # exception.txt so the fixer sees the actual error (typically docker build).
+    exception_path = trial_dir / "exception.txt"
+    if exception_path.exists():
+        content = exception_path.read_text().strip()
+        if content:
+            return (
+                "=== exception.txt (trial failed before verifier ran) ===\n"
+                + content
+            )
+
     if not verifier_dir.is_dir():
         logger.warning("No verifier/ dir in %s — Harbor may have failed to run the verifier.",
                        trial_dir)
-        return "(verifier directory missing)"
-    parts: list[str] = []
-    for name in ("test-stdout.txt", "test-stderr.txt"):
-        path = verifier_dir / name
-        if path.exists():
-            content = path.read_text().strip()
-            if content:
-                parts.append(f"=== {name} ===\n{content}")
-    return "\n\n".join(parts) if parts else "(verifier produced no output)"
+        return "(verifier directory missing and no exception.txt)"
+    return "(verifier produced no output and no exception.txt)"
+
+
+def extract_failure_summary(failure_text: str, max_chars: int = 600) -> str:
+    """Extract a short, actionable summary from a long failure_text blob.
+
+    Used for journal compact entries. Tiered scan: the most specific error
+    marker present in the text wins, regardless of where it appears, so that
+    e.g. a Docker build error report surfaces the actual failing step rather
+    than the generic Python ``RuntimeError`` wrapper that came first.
+    """
+    if not failure_text or not failure_text.strip():
+        return ""
+
+    lines = [ln.rstrip() for ln in failure_text.splitlines() if ln.strip()]
+    if not lines:
+        return ""
+
+    tiers = (
+        ("failed to solve:",),
+        ("ERROR: process", "ERROR ["),
+        ("ERROR:",),
+        ("AssertionError:", "RuntimeError:", "ImportError:",
+         "SyntaxError:", "ModuleNotFoundError:", "TypeError:", "ValueError:"),
+        ("FAILED ", "Error: "),
+    )
+    for tier in tiers:
+        for line in lines:
+            for marker in tier:
+                if marker in line:
+                    return line.strip()[:max_chars]
+
+    return lines[-1][:max_chars]

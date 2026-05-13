@@ -30,6 +30,8 @@ from pathlib import Path
 
 from . import durable, journal
 from .agent import (
+    extract_failure_summary,
+    is_build_failure,
     read_verifier_output,
     run_fixer,
     run_hacker,
@@ -122,6 +124,7 @@ async def _record_iter_in_journal(
     hack_summary: str | None,
     fixer_trial: Path | None,
     notes: str | None = None,
+    failure_detail: str | None = None,
 ) -> None:
     """Append one iter to the journal.
 
@@ -154,6 +157,7 @@ async def _record_iter_in_journal(
             hack_summary=hack_summary,
             fix_summary=fix_summary,
             notes=notes,
+            failure_detail=failure_detail,
             ledger_model=ledger_model or None,
             reasoning_effort=cfg.reasoning_effort,
             compact_max_iters=cfg.journal_compact_max_iters,
@@ -407,6 +411,7 @@ async def _harden_task_phases(
     # ── Cross-iteration state ─────────────────────────────────────────────────
     reuse_hack: tuple[str, float] | None = None
     previous_failure: str | None = None
+    previous_outcome: str | None = None  # "build_failed" / "fix_failed" / "replay_broke_fix" / ...
     previous_fixer_trial: Path | None = None
     previous_solver_trial: Path | None = None
     legitimate_streak: int = 0
@@ -599,6 +604,7 @@ async def _harden_task_phases(
             task_id=config.task_id,
             iteration=iteration,
             journal_text=fixer_journal_text,
+            previous_outcome=previous_outcome,
         )
         fixer_parent = create_working_copy(hardened_task_dir, output / "fixer_task")
         replace_instruction(fixer_parent, config.task_id, fixer_instruction)
@@ -665,6 +671,7 @@ async def _harden_task_phases(
                 iter_info["outcome"] = "pool_sync_noop"
                 reuse_hack = None
                 previous_failure = None
+                previous_outcome = None
                 previous_fixer_trial = None
                 previous_solver_trial = None
                 legitimate_streak = 0
@@ -710,6 +717,7 @@ async def _harden_task_phases(
                     return  # done — exits before validate yield
                 reuse_hack = None
                 previous_failure = None
+                previous_outcome = None
                 previous_fixer_trial = None
                 previous_solver_trial = None
                 result["iterations"].append(iter_info)
@@ -771,6 +779,7 @@ async def _harden_task_phases(
                             f"(reward={replay_reward:.2f} >= threshold={config.hack_threshold:.2f}). "
                             f"The fix was too narrow — widen it so the specific exploit no longer works."
                         )
+                        previous_outcome = "replay_broke_fix"
                         previous_fixer_trial = fixer_trial
                         previous_solver_trial = None
                         legitimate_streak = 0
@@ -780,6 +789,7 @@ async def _harden_task_phases(
                         fix_applied = True
                         hardened_dirty = True
                         previous_failure = None
+                        previous_outcome = None
                         previous_fixer_trial = None
                         previous_solver_trial = None
                         legitimate_streak = 0
@@ -792,8 +802,18 @@ async def _harden_task_phases(
                                 iter_info["pool_own_commit"] = own_sha
                             pool_cursor.persist()
                 else:
-                    logger.warning("Fix broke solver (reward=%.2f < %.2f). Reverting.",
-                                   solver_reward, config.solver_threshold)
+                    is_build = is_build_failure(solver_trial)
+                    if is_build:
+                        logger.warning(
+                            "Fix did not validate — trial failed before verifier ran "
+                            "(likely Dockerfile/env build error). Reverting."
+                        )
+                        iter_info["outcome"] = "build_failed"
+                        previous_outcome = "build_failed"
+                    else:
+                        logger.warning("Fix broke solver (reward=%.2f < %.2f). Reverting.",
+                                       solver_reward, config.solver_threshold)
+                        previous_outcome = "fix_failed"
                     previous_failure = read_verifier_output(solver_trial)
                     previous_fixer_trial = fixer_trial
                     previous_solver_trial = solver_trial
@@ -801,6 +821,7 @@ async def _harden_task_phases(
         except Exception as e:
             logger.warning("Fixer produced invalid artifacts: %s", e)
             previous_failure = str(e)
+            previous_outcome = "fix_failed"
             legitimate_streak = 0
             # NOTE: deliberately not touching previous_fixer_trial /
             # previous_solver_trial here. The next iter relies on the
@@ -830,10 +851,16 @@ async def _harden_task_phases(
             # the pool channel; intra-task journal stays focused on real
             # attack/defense rounds.
             if not pool_advanced:
+                failure_detail = (
+                    extract_failure_summary(previous_failure)
+                    if previous_failure and not fix_applied
+                    else None
+                )
                 await _record_iter_in_journal(
                     config, iteration=iteration, outcome=iter_info["outcome"],
                     fix_applied=fix_applied, hack_reward=hack_reward,
                     hack_summary=hack_summary, fixer_trial=fixer_trial,
+                    failure_detail=failure_detail,
                 )
 
     # while loop exhausted without a terminal break → max_iterations

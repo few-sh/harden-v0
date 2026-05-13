@@ -77,16 +77,22 @@ def _render_compact_entry(
     hack_summary: str | None,
     fix_summary: str | None,
     notes: str | None,
+    failure_detail: str | None = None,
 ) -> str:
     """Render a 4-6 line compact entry for one iteration.
 
     Used both in journal.md (concatenated tail) and as the per-iter
-    `iter_<N>_compact.md` cache file.
+    `iter_<N>_compact.md` cache file. ``failure_detail`` is a one-line
+    extract of the validation error and appears as a **Failure** bullet so
+    the next fixer can read it directly without drilling down.
     """
     lines: list[str] = [f"## Iter {iteration} — outcome: {outcome}"]
     if notes:
         lines.append(f"_{notes}_")
     lines.append("")
+
+    if failure_detail:
+        lines.append(f"- **Failure**: {failure_detail}")
 
     if hack_summary:
         strategy = _first_value_for(hack_summary, "Strategy:") or "(no strategy extracted)"
@@ -229,11 +235,14 @@ def _render_full_iter(
     hack_summary: str | None,
     fix_summary: str | None,
     notes: str | None,
+    failure_detail: str | None = None,
 ) -> str:
     """Render the full per-iter drill-down file content."""
     parts: list[str] = [f"# Iter {iteration} — outcome: {outcome}"]
     if notes:
         parts.append(f"\n{notes}\n")
+    if failure_detail:
+        parts.append(f"\n## Failure\n\n{failure_detail}\n")
     if hack_summary:
         reward_str = f" (reward {hack_reward:.2f})" if hack_reward is not None else ""
         parts.append(f"\n## Hacker{reward_str}\n\n{hack_summary}\n")
@@ -314,6 +323,7 @@ async def append_iter(
     hack_summary: str | None,
     fix_summary: str | None,
     notes: str | None = None,
+    failure_detail: str | None = None,
     ledger_model: str | None = None,
     reasoning_effort: str | None = None,
     compact_max_iters: int = _DEFAULT_COMPACT_MAX_ITERS,
@@ -323,12 +333,21 @@ async def append_iter(
     Writes the full drill-down file and the compact entry, then regenerates
     `journal.md`. Iff `fix_applied` and `ledger_model` is set, also refreshes
     `defenses_in_force.md` via an LLM call.
+
+    ``failure_detail`` is a one-line summary of why the fix was rejected
+    (extracted upstream from ``previous_failure``); appears as a prominent
+    bullet in the compact entry so the next fixer's prompt surfaces the
+    specific blocker without needing to drill into ``iter_<N>.md``.
     """
     jdir = journal_dir(task_output_dir)
     jdir.mkdir(parents=True, exist_ok=True)
 
-    full = _render_full_iter(iteration, outcome, hack_reward, hack_summary, fix_summary, notes)
-    compact = _render_compact_entry(iteration, outcome, hack_reward, hack_summary, fix_summary, notes)
+    full = _render_full_iter(
+        iteration, outcome, hack_reward, hack_summary, fix_summary, notes, failure_detail,
+    )
+    compact = _render_compact_entry(
+        iteration, outcome, hack_reward, hack_summary, fix_summary, notes, failure_detail,
+    )
     _atomic_write(jdir / f"iter_{iteration}.md", full)
     _atomic_write(jdir / f"iter_{iteration}_compact.md", compact)
 
