@@ -455,12 +455,15 @@ def build_fixer_instruction(
 
         if previous_outcome == "trial_setup_failed":
             header = (
-                "PREVIOUS FIX FAILED — the trial did not complete setup, so"
-                " the verifier never ran. The failure happened somewhere"
-                " between job start and the first verifier invocation."
-                " Failures in this phase frequently surface far from the"
-                " line you edited — the error message names whatever step"
-                " finally blew up, not necessarily what triggered it."
+                "PREVIOUS FIX FAILED — the trial did not complete setup,"
+                " so the verifier never ran. Setup includes Docker image"
+                " build, container start, and Harbor's in-container agent"
+                " initialization (which installs and starts tmux and"
+                " asciinema inside the running container, executing as"
+                " the image's default user). Failures in this phase"
+                " frequently surface far from the line you edited — the"
+                " error message names whatever step finally blew up, not"
+                " necessarily what triggered it."
             )
             directive = (
                 "ACTION REQUIRED: Assume your last change caused this until"
