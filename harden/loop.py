@@ -31,7 +31,7 @@ from pathlib import Path
 from . import durable, journal
 from .agent import (
     extract_failure_summary,
-    is_build_failure,
+    is_trial_setup_failure,
     read_verifier_output,
     run_fixer,
     run_hacker,
@@ -411,7 +411,7 @@ async def _harden_task_phases(
     # ── Cross-iteration state ─────────────────────────────────────────────────
     reuse_hack: tuple[str, float] | None = None
     previous_failure: str | None = None
-    previous_outcome: str | None = None  # "build_failed" / "fix_failed" / "replay_broke_fix" / ...
+    previous_outcome: str | None = None  # "trial_setup_failed" / "fix_failed" / "replay_broke_fix" / ...
     previous_fixer_trial: Path | None = None
     previous_solver_trial: Path | None = None
     legitimate_streak: int = 0
@@ -802,14 +802,13 @@ async def _harden_task_phases(
                                 iter_info["pool_own_commit"] = own_sha
                             pool_cursor.persist()
                 else:
-                    is_build = is_build_failure(solver_trial)
-                    if is_build:
+                    if is_trial_setup_failure(solver_trial):
                         logger.warning(
                             "Fix did not validate — trial failed before verifier ran "
-                            "(likely Dockerfile/env build error). Reverting."
+                            "(setup error: build/container-start/agent-init). Reverting."
                         )
-                        iter_info["outcome"] = "build_failed"
-                        previous_outcome = "build_failed"
+                        iter_info["outcome"] = "trial_setup_failed"
+                        previous_outcome = "trial_setup_failed"
                     else:
                         logger.warning("Fix broke solver (reward=%.2f < %.2f). Reverting.",
                                        solver_reward, config.solver_threshold)

@@ -332,15 +332,28 @@ def _has_verifier_output(trial_dir: Path) -> bool:
     return False
 
 
-def is_build_failure(trial_dir: Path) -> bool:
+def is_trial_setup_failure(trial_dir: Path) -> bool:
     """True if the trial failed before producing any verifier output.
 
-    The typical case is a Docker compose build error (Dockerfile change broke
-    the image build); also catches Harbor harness errors (env setup, tmux
-    crash) where the verifier never ran. Distinguishes those from genuine
-    test regressions where the verifier ran but the solver failed.
+    This covers any failure between job start and verifier execution:
+    Docker compose build errors, container start failures, Harbor agent
+    setup errors (tmux init, shell spawn, etc.). All of these can be
+    caused by a fixer's change to the Dockerfile/environment — DO NOT
+    assume "no verifier output" implies a transient infrastructure issue.
+    The corresponding signal is that the fixer's edit produced an
+    environment in which the trial cannot run, regardless of which exact
+    setup step surfaces the failure.
+
+    Distinguishes pre-verifier failures from genuine test regressions
+    where the verifier ran but the solver failed.
     """
     return not _has_verifier_output(trial_dir)
+
+
+# Backward-compat alias — the old name was misleading because the failure
+# class is broader than docker build. Kept so callers outside this repo
+# don't break; new code should use is_trial_setup_failure.
+is_build_failure = is_trial_setup_failure
 
 
 def read_verifier_output(trial_dir: Path) -> str:

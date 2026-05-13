@@ -442,8 +442,8 @@ def build_fixer_instruction(
     pipeline wording vs generic task-verifier wording). `oracle` only affects
     the failure-feedback wording — an oracle pre-check is deterministic and
     worth mentioning explicitly so the fixer knows it can't blame a flaky
-    solver. `previous_outcome` (when set to "build_failed") rewrites the
-    feedback block so the fixer treats a Docker/env build error
+    solver. `previous_outcome` (when set to "trial_setup_failed") rewrites
+    the feedback block so the fixer treats a pre-verifier setup failure
     differently from a test regression.
     """
     if previous_failure:
@@ -453,47 +453,50 @@ def build_fixer_instruction(
             if oracle else ""
         )
 
-        if previous_outcome == "build_failed":
+        if previous_outcome == "trial_setup_failed":
             header = (
-                "PREVIOUS FIX FAILED — Docker/environment BUILD ERROR. The image "
-                "could not be built, so the verifier never ran. Your last change "
-                "to the Dockerfile or environment is invalid."
+                "PREVIOUS FIX FAILED — the trial did not complete setup, so"
+                " the verifier never ran. The failure happened somewhere"
+                " between job start and the first verifier invocation."
+                " Failures in this phase frequently surface far from the"
+                " line you edited — the error message names whatever step"
+                " finally blew up, not necessarily what triggered it."
             )
             directive = (
-                "ACTION REQUIRED: Read the error text below carefully and identify "
-                "the EXACT failing step (e.g., the specific RUN line, the specific "
-                "command, the specific exit code or error message). Your next "
-                "change must fix THAT specific step — do NOT retry the same "
-                "Dockerfile pattern unchanged, and do NOT pivot to a completely "
-                "different defense strategy. If a directive like `useradd -u 1000` "
-                "fails because the UID exists, pick a different UID (or use "
-                "`--non-unique`, or drop the `-u` flag). If `apt-get install` "
-                "fails, check the package name. Match the fix to the actual error."
+                "ACTION REQUIRED: Assume your last change caused this until"
+                " the error proves otherwise. Read the full failure output"
+                " below and identify the SPECIFIC failing step, command, or"
+                " error. Then trace it back to what you edited — including"
+                " edits whose connection to the failing step is indirect."
+                " Make the minimal edit that addresses the actual failure."
+                " Do not retry the same change unchanged. Do not pivot to"
+                " an unrelated defense strategy just because the error"
+                " looks unfamiliar."
             )
         elif previous_outcome == "replay_broke_fix":
             header = (
-                "PREVIOUS FIX WAS INSUFFICIENT — solver accepted the fix, but a "
-                "targeted replay reproduced the exploit on the patched task. "
-                "The fix was too narrow."
+                "PREVIOUS FIX WAS INSUFFICIENT — the solver accepted the fix, "
+                "but a targeted replay reproduced the exploit on the patched "
+                "task. The fix was too narrow."
             )
             directive = (
-                "ACTION REQUIRED: Read the replay/failure detail below and identify "
-                "the specific path the replay used to re-land the exploit. Widen "
-                "your defense so that path is blocked, not just the literal "
-                "command the hacker first used."
+                "ACTION REQUIRED: Read the replay/failure detail below and "
+                "identify the specific path the replay used to re-land the "
+                "exploit. Widen your defense so that path is also blocked, "
+                "not just the literal command the hacker first used."
             )
         else:
             header = (
-                f"PREVIOUS FIX FAILED — {who} could not pass on the patched task. "
-                f"This is a regression: your change broke legitimate solvability."
+                f"PREVIOUS FIX FAILED — {who} could not pass on the patched "
+                f"task. This is a regression: your last change made the task "
+                f"unsolvable for a legitimate agent."
             )
             directive = (
-                f"ACTION REQUIRED: Read the failure detail below and identify the "
-                f"SPECIFIC test or assertion that broke. Your next change must "
-                f"restore solvability for that specific check while still blocking "
-                f"the original hack. Be less restrictive in the dimension that "
-                f"broke — do not weaken unrelated defenses, and do not retry the "
-                f"same change unchanged.{oracle_tail}"
+                f"ACTION REQUIRED: Read the failure detail below and identify "
+                f"the SPECIFIC test, assertion, or step that broke. Your next "
+                f"change must restore that specific check while still blocking "
+                f"the hack. Do not weaken unrelated defenses, and do not "
+                f"retry the same change unchanged.{oracle_tail}"
             )
 
         parts = [
