@@ -591,6 +591,19 @@ async def _harden_task_phases(
             journal.read_compact(config.task_output_dir)
             if config.journal_enabled else None
         )
+        # Re-read each iter so edits to the file mid-run take effect on the
+        # next iter. Swallow missing-file / read errors so a misconfigured
+        # path can't break the loop — log once and continue without the
+        # extra guidance.
+        custom_fixer_prompt: str | None = None
+        if config.fixer_prompt_file is not None:
+            try:
+                custom_fixer_prompt = config.fixer_prompt_file.read_text()
+            except OSError as exc:
+                logger.warning(
+                    "Could not read fixer_prompt_file=%s: %s — skipping additional guidance.",
+                    config.fixer_prompt_file, exc,
+                )
         fixer_instruction = build_fixer_instruction(
             original_instruction, hack_summary, previous_failure,
             has_previous_attempt=previous_fixer_trial is not None,
@@ -605,6 +618,7 @@ async def _harden_task_phases(
             iteration=iteration,
             journal_text=fixer_journal_text,
             previous_outcome=previous_outcome,
+            custom_fixer_prompt=custom_fixer_prompt,
         )
         fixer_parent = create_working_copy(hardened_task_dir, output / "fixer_task")
         replace_instruction(fixer_parent, config.task_id, fixer_instruction)

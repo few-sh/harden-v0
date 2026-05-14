@@ -153,6 +153,12 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--journal-compact-max-iters", type=int, default=10,
                         help="How many recent iter compact entries to inline in journal.md (default 10).")
 
+    parser.add_argument("--fixer-prompt-file", type=Path, default=None,
+                        help="Optional path to a markdown file whose contents are appended to "
+                             "every fixer prompt as 'Additional guidance'. If unset, no extra "
+                             "section is added. File contents are hashed into the job-cache "
+                             "fingerprint, so editing the file invalidates the cache.")
+
     parser.add_argument("--log-level", default="INFO",
                         choices=["DEBUG", "INFO", "WARNING", "ERROR"],
                         help="Logging level (default: INFO)")
@@ -204,6 +210,7 @@ def _config_kwargs(args: argparse.Namespace) -> dict:
         retry_failed_prechecks=args.retry_failed_prechecks,
         journal_enabled=args.journal_enabled,
         journal_compact_max_iters=args.journal_compact_max_iters,
+        fixer_prompt_file=args.fixer_prompt_file,
     )
 
 

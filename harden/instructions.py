@@ -435,6 +435,7 @@ def build_fixer_instruction(
     iteration: int = 0,
     journal_text: str | None = None,
     previous_outcome: str | None = None,
+    custom_fixer_prompt: str | None = None,
 ) -> str:
     """Build the fixer prompt.
 
@@ -552,5 +553,14 @@ def build_fixer_instruction(
         body += POOL_FIXER_HINT_TEMPLATE.format(
             task_id=task_id or "<task>",
             iteration=iteration,
+        )
+
+    # User-supplied extra guidance (--fixer-prompt-file). Appended last so it
+    # has highest recency in the prompt and can override defaults.
+    if custom_fixer_prompt and custom_fixer_prompt.strip():
+        body += (
+            "\n\n## Additional guidance\n\n"
+            + custom_fixer_prompt.strip()
+            + "\n"
         )
     return body

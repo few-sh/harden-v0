@@ -44,6 +44,7 @@ _FINGERPRINT_EXCLUDE = frozenset({
     "image_name", "force_build",  # build mechanics
     "pool_port", "pool_bootstrap_dir",  # pool plumbing (pool_enabled IS included)
     "harbor_config",            # hashed by file content separately
+    "fixer_prompt_file",        # hashed by file content separately
 })
 
 
@@ -133,6 +134,13 @@ class HardenConfig:
     # Older iters remain in /journal/iter_<N>.md for drill-down.
     journal_compact_max_iters: int = 10
 
+    # Optional markdown file whose contents are appended to every fixer
+    # prompt as "Additional guidance". Use for run-wide instructions
+    # (e.g., "prefer test-side fixes over Dockerfile changes", "do not
+    # modify file X"). File contents are hashed into the fingerprint so
+    # cache invalidates when the file changes.
+    fixer_prompt_file: Path | None = None
+
     # If True, preserve an existing output/hardened/<task>/ from a prior run.
     resume: bool = False
 
@@ -161,6 +169,10 @@ class HardenConfig:
         if self.harbor_config is not None:
             payload["_harbor_config_sha"] = hashlib.sha256(
                 self.harbor_config.read_bytes()
+            ).hexdigest()
+        if self.fixer_prompt_file is not None:
+            payload["_fixer_prompt_file_sha"] = hashlib.sha256(
+                self.fixer_prompt_file.read_bytes()
             ).hexdigest()
         return hashlib.sha256(
             json.dumps(payload, sort_keys=True, default=str).encode()

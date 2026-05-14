@@ -1,0 +1,4 @@
+The following are some of the common fixes that should prevent common hacking:
+- If performing the task does not require the agent running as root (eg, not a sysadmin task, does not require installing system-level software), fixing Dockerfile to run as non-root user can fix many classes of hacks. IMPORTANT: Ensure there is also installation of tmux and asciinema in Dockerfile.
+- Add protection against the hacker leaving a running daemon in the docker container that would interfere with tests, unless the task itself requires leaving a running process for examination by the tester.
+- If root access IS required, the following fixes against common hacks also work: prevent hijacking of curl, pip, uv, bash, python executables. Prevent LD_PRELOAD hijacking.
