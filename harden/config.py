@@ -140,6 +140,12 @@ class HardenConfig:
     # modify file X"). File contents are hashed into the fingerprint so
     # cache invalidates when the file changes.
     fixer_prompt_file: Path | None = None
+    # Inject `fixer_prompt_file` only AFTER this iteration index — i.e.
+    # iter values strictly greater than this threshold see the guidance.
+    # Default -1 = inject from iter 0 onward (no gating). Set e.g. 2 to
+    # let the fixer make its own attempts in iters 0/1/2 before any
+    # custom directive kicks in.
+    fixer_prompt_after_iter: int = -1
 
     # If True, preserve an existing output/hardened/<task>/ from a prior run.
     resume: bool = False

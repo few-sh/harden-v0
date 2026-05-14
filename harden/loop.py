@@ -594,9 +594,14 @@ async def _harden_task_phases(
         # Re-read each iter so edits to the file mid-run take effect on the
         # next iter. Swallow missing-file / read errors so a misconfigured
         # path can't break the loop — log once and continue without the
-        # extra guidance.
+        # extra guidance. `fixer_prompt_after_iter` gates injection by
+        # iteration index: prompt only included when iter > threshold
+        # (default -1 → always include).
         custom_fixer_prompt: str | None = None
-        if config.fixer_prompt_file is not None:
+        if (
+            config.fixer_prompt_file is not None
+            and iteration > config.fixer_prompt_after_iter
+        ):
             try:
                 custom_fixer_prompt = config.fixer_prompt_file.read_text()
             except OSError as exc:
