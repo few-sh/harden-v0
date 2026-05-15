@@ -22,9 +22,8 @@ from harbor.job import Job
 from harbor.models.agent.name import AgentName
 from harbor.models.environment_type import EnvironmentType
 from harbor.models.job.config import (
+    DatasetConfig,
     JobConfig,
-    LocalDatasetConfig,
-    OrchestratorConfig,
 )
 from harbor.models.trial.config import AgentConfig, EnvironmentConfig, VerifierConfig
 from harbor.models.trial.result import TrialResult
@@ -234,7 +233,7 @@ def _load_base_config(harbor_config: Path | None) -> JobConfig:
     if harbor_config is None:
         return JobConfig(
             environment=EnvironmentConfig(type=EnvironmentType.DOCKER, delete=True),
-            orchestrator=OrchestratorConfig(n_concurrent_trials=1),
+            n_concurrent_trials=1,
         )
     if harbor_config.suffix in (".yaml", ".yml"):
         return JobConfig.model_validate(yaml.safe_load(harbor_config.read_text()))
@@ -284,7 +283,7 @@ async def _run_agent(
     base_config.job_name = job_name
     base_config.jobs_dir = jobs_dir
     base_config.agents = [agent_config]
-    base_config.datasets = [LocalDatasetConfig(path=task_parent_dir)]
+    base_config.datasets = [DatasetConfig(path=task_parent_dir)]
     base_config.verifier = VerifierConfig(disable=disable_verifier)
     base_config.artifacts = artifacts or []
     base_config.timeout_multiplier = timeout_multiplier
@@ -294,7 +293,7 @@ async def _run_agent(
     if image_name is not None:
         base_config.environment.kwargs["image_name"] = image_name
 
-    job = Job(config=base_config)
+    job = await Job.create(base_config)
 
     logger.info("[%s] Starting %s on %s (model=%s)", role, agent_name.value, task_parent_dir, model_name)
 
