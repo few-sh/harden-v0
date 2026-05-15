@@ -21,6 +21,7 @@ memory.
 
 import json
 import logging
+import subprocess
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -228,6 +229,57 @@ def _atomic_write(path: Path, content: str) -> None:
     tmp.replace(path)
 
 
+def _write_fixer_patch(
+    jdir: Path,
+    iteration: int,
+    fixer_trial: Path | None,
+) -> None:
+    """Write `journal/iter_<N>.patch` with this iter's fixer-committed diff.
+
+    Computed as ``git diff --binary initial HEAD`` inside the fixer's
+    artifacts repo. The ``initial`` tag is created at fixer container
+    start (see workspace.prepare_fixer_environment), so it captures the
+    state going into this iter — which equals the previous iter's
+    accepted hardened state (rejected iters don't update hardened).
+    ``--binary`` keeps adds/edits of binary files (e.g. reference
+    archives) in the patch rather than reducing them to "Binary files
+    differ."
+
+    Best-effort: missing/broken artifacts dirs log a warning and skip the
+    write; empty diffs (fixer committed only `.legitimate`, say) write no
+    file. The journal must never fail because of patch generation.
+    """
+    if fixer_trial is None:
+        return
+    artifacts = fixer_trial / "artifacts"
+    if not artifacts.is_dir():
+        return
+    try:
+        result = subprocess.run(
+            ["git", "-c", "safe.directory=*", "-C", str(artifacts),
+             "diff", "--binary", "initial", "HEAD"],
+            capture_output=True, text=True, timeout=30,
+        )
+    except Exception as exc:
+        logger.warning(
+            "Could not run git diff for iter %d patch (%s): %s",
+            iteration, artifacts, exc,
+        )
+        return
+    if result.returncode != 0:
+        logger.warning(
+            "git diff returned non-zero for iter %d patch (%s): %s",
+            iteration, artifacts, result.stderr.strip(),
+        )
+        return
+    if not result.stdout.strip():
+        # Empty diff — e.g. fixer only committed `.legitimate` with no
+        # actual content changes. Nothing useful to write.
+        return
+    jdir.mkdir(parents=True, exist_ok=True)
+    _atomic_write(jdir / f"iter_{iteration}.patch", result.stdout)
+
+
 def _render_full_iter(
     iteration: int,
     outcome: str,
@@ -322,6 +374,7 @@ async def append_iter(
     hack_reward: float | None,
     hack_summary: str | None,
     fix_summary: str | None,
+    fixer_trial: Path | None = None,
     notes: str | None = None,
     failure_detail: str | None = None,
     ledger_model: str | None = None,
@@ -350,6 +403,7 @@ async def append_iter(
     )
     _atomic_write(jdir / f"iter_{iteration}.md", full)
     _atomic_write(jdir / f"iter_{iteration}_compact.md", compact)
+    _write_fixer_patch(jdir, iteration, fixer_trial)
 
     if fix_applied and ledger_model and hack_summary and fix_summary:
         prior = read_defenses_in_force(task_output_dir)

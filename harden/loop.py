@@ -156,6 +156,7 @@ async def _record_iter_in_journal(
             hack_reward=hack_reward,
             hack_summary=hack_summary,
             fix_summary=fix_summary,
+            fixer_trial=fixer_trial,
             notes=notes,
             failure_detail=failure_detail,
             ledger_model=ledger_model or None,
