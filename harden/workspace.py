@@ -101,6 +101,14 @@ def prepare_solver_environment(
         shutil.rmtree(solution_dest)
     shutil.copytree(solution_src, solution_dest)
 
+    # Some TB3 tasks ship a .dockerignore that excludes solution/ (and tests/) so
+    # the runtime image stays clean; that breaks our COPY solution/ injection.
+    # Privileged mode is opt-in and explicitly wants the reference in the image,
+    # so drop the file in this working copy.
+    dockerignore = env_dir / ".dockerignore"
+    if dockerignore.exists():
+        dockerignore.unlink()
+
     content = dockerfile.read_text()
 
     # Find the last USER directive so we can restore it after the root chmod
