@@ -137,7 +137,6 @@ async def llm_summarize_trajectory(
 
             completion_kwargs: dict = {
                 "model": model,
-                "custom_llm_provider": "gemini",
                 "messages": [
                     {"role": "system", "content": summarizer.system_prompt},
                     {"role": "user", "content": json.dumps(user_prompt)},

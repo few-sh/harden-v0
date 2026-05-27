@@ -181,7 +181,6 @@ async def _update_defenses_ledger(
         }
         kwargs: dict = {
             "model": model,
-            "custom_llm_provider": "gemini",
             "messages": [
                 {"role": "system", "content": _LEDGER_SYSTEM_PROMPT},
                 {"role": "user", "content": json.dumps(user_payload)},
