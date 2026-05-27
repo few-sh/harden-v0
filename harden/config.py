@@ -95,6 +95,13 @@ class HardenConfig:
     hacker_privileged: bool = False
     # When hacker_privileged is enabled, disable it starting at this iteration index.
     hacker_privileged_disable_iteration: int = 5
+    # Opposite of `hacker_privileged_disable_iteration`: when set, the hacker
+    # starts non-privileged and `hacker_privileged` only kicks in at iteration
+    # indices >= this value. Mutually exclusive with disable_iteration at the
+    # CLI. When set, the loop refuses to mark the task `robust` until at least
+    # one iteration has actually run a privileged hacker — a non-privileged
+    # hacker failure can no longer end the run.
+    hacker_privileged_enable_iteration: int | None = None
 
     # Targeted replay (post-solver gate): re-run hacker constrained to reproduce the
     # specific prior exploit on the patched task. If the exploit re-lands, the fix

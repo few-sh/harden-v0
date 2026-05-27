@@ -101,9 +101,16 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--hacker-privileged", action="store_true",
                         help="Give hacker read-only access to the evaluation environment "
                              "(tests/, environment/) at /eval_env/")
-    parser.add_argument("--hacker-privileged-disable-iteration", type=int, default=5,
+    priv_iter_group = parser.add_mutually_exclusive_group()
+    priv_iter_group.add_argument("--hacker-privileged-disable-iteration", type=int, default=5,
                         help="Iteration index at which --hacker-privileged is disabled "
                              "(default: 5). Only applies when --hacker-privileged is set")
+    priv_iter_group.add_argument("--hacker-privileged-enable-iteration", type=int, default=None,
+                        help="Opposite of --hacker-privileged-disable-iteration: hacker "
+                             "starts non-privileged and privilege turns on at this iteration "
+                             "index (default: unset). Only applies when --hacker-privileged "
+                             "is set. While in effect, the task is not declared 'robust' until "
+                             "at least one iteration has actually run a privileged hacker.")
 
     # Targeted replay (post-solver gate) — reuses hacker knobs for model/turns/timeout.
     parser.add_argument("--replay-enabled", action="store_true",
@@ -201,6 +208,7 @@ def _config_kwargs(args: argparse.Namespace) -> dict:
         summary_model=args.summary_model,
         hacker_privileged=args.hacker_privileged,
         hacker_privileged_disable_iteration=args.hacker_privileged_disable_iteration,
+        hacker_privileged_enable_iteration=args.hacker_privileged_enable_iteration,
         replay_enabled=args.replay_enabled,
         replay_retries=args.replay_retries,
         harbor_config=args.harbor_config,
@@ -248,6 +256,11 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.hacker_privileged_disable_iteration < 0:
         parser.error("--hacker-privileged-disable-iteration must be >= 0")
+    if (
+        args.hacker_privileged_enable_iteration is not None
+        and args.hacker_privileged_enable_iteration < 0
+    ):
+        parser.error("--hacker-privileged-enable-iteration must be >= 0")
 
     args.resume = args.output_dir.exists()
     args.output_dir.mkdir(parents=True, exist_ok=True)

@@ -322,6 +322,14 @@ def prepare_fixer_environment(
     if not dockerfile.exists():
         return
 
+    # Some TB3 tasks ship a .dockerignore that excludes tests/ and solution/ from
+    # the build context; that breaks the COPY tests/ + COPY solution/ injections
+    # below. The fixer always needs both baked into the image, so drop the file
+    # in this working copy.
+    dockerignore = env_dir / ".dockerignore"
+    if dockerignore.exists():
+        dockerignore.unlink()
+
     additions = []
 
     additions.append("RUN which git || (apt-get update -qq && apt-get install -y -qq git > /dev/null)")
