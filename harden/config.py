@@ -44,6 +44,7 @@ _FINGERPRINT_EXCLUDE = frozenset({
     "image_name", "force_build",  # build mechanics
     "pool_port", "pool_bootstrap_dir",  # pool plumbing (pool_enabled IS included)
     "harbor_config",            # hashed by file content separately
+    "fixer_prompt_file",        # hashed by file content separately
 })
 
 
@@ -123,6 +124,29 @@ class HardenConfig:
     # task-agnostic defense scaffold.
     pool_integrate_bootstrap: bool = False
 
+    # Cross-iteration journal — per-task hacker+fixer memory persisted at
+    # <task_output_dir>/journal.md + <task_output_dir>/journal/. When True,
+    # the loop summarizes every iter into the journal and injects it into
+    # the hacker, fixer, and replay prompts. Use journal_enabled=False for
+    # ablation runs that match prior no-journal behavior.
+    journal_enabled: bool = True
+    # Maximum number of recent iters' compact entries inlined into journal.md.
+    # Older iters remain in /journal/iter_<N>.md for drill-down.
+    journal_compact_max_iters: int = 10
+
+    # Optional markdown file whose contents are appended to every fixer
+    # prompt as "Additional guidance". Use for run-wide instructions
+    # (e.g., "prefer test-side fixes over Dockerfile changes", "do not
+    # modify file X"). File contents are hashed into the fingerprint so
+    # cache invalidates when the file changes.
+    fixer_prompt_file: Path | None = None
+    # Inject `fixer_prompt_file` only AFTER this iteration index — i.e.
+    # iter values strictly greater than this threshold see the guidance.
+    # Default -1 = inject from iter 0 onward (no gating). Set e.g. 2 to
+    # let the fixer make its own attempts in iters 0/1/2 before any
+    # custom directive kicks in.
+    fixer_prompt_after_iter: int = -1
+
     # If True, preserve an existing output/hardened/<task>/ from a prior run.
     resume: bool = False
 
@@ -151,6 +175,10 @@ class HardenConfig:
         if self.harbor_config is not None:
             payload["_harbor_config_sha"] = hashlib.sha256(
                 self.harbor_config.read_bytes()
+            ).hexdigest()
+        if self.fixer_prompt_file is not None:
+            payload["_fixer_prompt_file_sha"] = hashlib.sha256(
+                self.fixer_prompt_file.read_bytes()
             ).hexdigest()
         return hashlib.sha256(
             json.dumps(payload, sort_keys=True, default=str).encode()

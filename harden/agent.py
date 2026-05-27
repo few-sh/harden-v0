@@ -22,9 +22,8 @@ from harbor.job import Job
 from harbor.models.agent.name import AgentName
 from harbor.models.environment_type import EnvironmentType
 from harbor.models.job.config import (
+    DatasetConfig,
     JobConfig,
-    LocalDatasetConfig,
-    OrchestratorConfig,
 )
 from harbor.models.trial.config import AgentConfig, EnvironmentConfig, VerifierConfig
 from harbor.models.trial.result import TrialResult
@@ -234,7 +233,7 @@ def _load_base_config(harbor_config: Path | None) -> JobConfig:
     if harbor_config is None:
         return JobConfig(
             environment=EnvironmentConfig(type=EnvironmentType.DOCKER, delete=True),
-            orchestrator=OrchestratorConfig(n_concurrent_trials=1),
+            n_concurrent_trials=1,
         )
     if harbor_config.suffix in (".yaml", ".yml"):
         return JobConfig.model_validate(yaml.safe_load(harbor_config.read_text()))
@@ -284,7 +283,7 @@ async def _run_agent(
     base_config.job_name = job_name
     base_config.jobs_dir = jobs_dir
     base_config.agents = [agent_config]
-    base_config.datasets = [LocalDatasetConfig(path=task_parent_dir)]
+    base_config.datasets = [DatasetConfig(path=task_parent_dir)]
     base_config.verifier = VerifierConfig(disable=disable_verifier)
     base_config.artifacts = artifacts or []
     base_config.timeout_multiplier = timeout_multiplier
@@ -294,7 +293,7 @@ async def _run_agent(
     if image_name is not None:
         base_config.environment.kwargs["image_name"] = image_name
 
-    job = Job(config=base_config)
+    job = await Job.create(base_config)
 
     logger.info("[%s] Starting %s on %s (model=%s)", role, agent_name.value, task_parent_dir, model_name)
 
@@ -320,18 +319,106 @@ async def _run_agent(
     return {"reward": reward, "trial_dir": str(trial_dir)}
 
 
-def read_verifier_output(trial_dir: Path) -> str:
-    """Read verifier stdout/stderr for failure feedback."""
+def _has_verifier_output(trial_dir: Path) -> bool:
+    """True if the trial produced any verifier stdout/stderr."""
     verifier_dir = trial_dir / "verifier"
+    if not verifier_dir.is_dir():
+        return False
+    for name in ("test-stdout.txt", "test-stderr.txt"):
+        path = verifier_dir / name
+        if path.exists() and path.stat().st_size > 0:
+            return True
+    return False
+
+
+def is_trial_setup_failure(trial_dir: Path) -> bool:
+    """True if the trial failed before producing any verifier output.
+
+    This covers any failure between job start and verifier execution:
+    Docker compose build errors, container start failures, Harbor agent
+    setup errors (tmux init, shell spawn, etc.). All of these can be
+    caused by a fixer's change to the Dockerfile/environment — DO NOT
+    assume "no verifier output" implies a transient infrastructure issue.
+    The corresponding signal is that the fixer's edit produced an
+    environment in which the trial cannot run, regardless of which exact
+    setup step surfaces the failure.
+
+    Distinguishes pre-verifier failures from genuine test regressions
+    where the verifier ran but the solver failed.
+    """
+    return not _has_verifier_output(trial_dir)
+
+
+# Backward-compat alias — the old name was misleading because the failure
+# class is broader than docker build. Kept so callers outside this repo
+# don't break; new code should use is_trial_setup_failure.
+is_build_failure = is_trial_setup_failure
+
+
+def read_verifier_output(trial_dir: Path) -> str:
+    """Read verifier stdout/stderr for failure feedback.
+
+    Falls back to ``exception.txt`` when no verifier output exists — that's
+    where Harbor records Docker build failures and harness errors, which
+    would otherwise leave the next fixer with no actionable signal.
+    """
+    parts: list[str] = []
+    verifier_dir = trial_dir / "verifier"
+    if verifier_dir.is_dir():
+        for name in ("test-stdout.txt", "test-stderr.txt"):
+            path = verifier_dir / name
+            if path.exists():
+                content = path.read_text().strip()
+                if content:
+                    parts.append(f"=== {name} ===\n{content}")
+    if parts:
+        return "\n\n".join(parts)
+
+    # No verifier output — the trial failed before tests ran. Surface
+    # exception.txt so the fixer sees the actual error (typically docker build).
+    exception_path = trial_dir / "exception.txt"
+    if exception_path.exists():
+        content = exception_path.read_text().strip()
+        if content:
+            return (
+                "=== exception.txt (trial failed before verifier ran) ===\n"
+                + content
+            )
+
     if not verifier_dir.is_dir():
         logger.warning("No verifier/ dir in %s — Harbor may have failed to run the verifier.",
                        trial_dir)
-        return "(verifier directory missing)"
-    parts: list[str] = []
-    for name in ("test-stdout.txt", "test-stderr.txt"):
-        path = verifier_dir / name
-        if path.exists():
-            content = path.read_text().strip()
-            if content:
-                parts.append(f"=== {name} ===\n{content}")
-    return "\n\n".join(parts) if parts else "(verifier produced no output)"
+        return "(verifier directory missing and no exception.txt)"
+    return "(verifier produced no output and no exception.txt)"
+
+
+def extract_failure_summary(failure_text: str, max_chars: int = 600) -> str:
+    """Extract a short, actionable summary from a long failure_text blob.
+
+    Used for journal compact entries. Tiered scan: the most specific error
+    marker present in the text wins, regardless of where it appears, so that
+    e.g. a Docker build error report surfaces the actual failing step rather
+    than the generic Python ``RuntimeError`` wrapper that came first.
+    """
+    if not failure_text or not failure_text.strip():
+        return ""
+
+    lines = [ln.rstrip() for ln in failure_text.splitlines() if ln.strip()]
+    if not lines:
+        return ""
+
+    tiers = (
+        ("failed to solve:",),
+        ("ERROR: process", "ERROR ["),
+        ("ERROR:",),
+        ("AssertionError:", "RuntimeError:", "ImportError:",
+         "SyntaxError:", "ModuleNotFoundError:", "TypeError:", "ValueError:"),
+        ("FAILED ", "Error: "),
+    )
+    for tier in tiers:
+        for line in lines:
+            for marker in tier:
+                if marker in line:
+                    return line.strip()[:max_chars]
+
+    return lines[-1][:max_chars]
