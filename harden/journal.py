@@ -154,8 +154,9 @@ async def _update_defenses_ledger(
     "append a line" update if the LLM call fails.
     """
     try:
-        import litellm
         from pydantic import BaseModel, Field
+
+        from harden.llm import acompletion_with_retry
 
         class LedgerEntry(BaseModel):
             name: str = Field(..., description="Short defense name, ~2-5 words.")
@@ -191,7 +192,7 @@ async def _update_defenses_ledger(
         if reasoning_effort is not None:
             kwargs["reasoning_effort"] = reasoning_effort
 
-        response = await litellm.acompletion(**kwargs)
+        response = await acompletion_with_retry(**kwargs)
         parsed = LedgerResponse.model_validate_json(response.choices[0].message.content)
 
         lines = ["## Defenses in force", ""]
