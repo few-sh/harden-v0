@@ -586,7 +586,6 @@ async def _harden_task_phases(
                     )
                     result["iterations"].append(iter_info)
                     _save_result(config.result_path, result)
-                    await _summarize_hack_attempt(config, hacker_trial)
                     await _record_iter_in_journal(
                         config, iteration=iteration, outcome="hacker_failed",
                         fix_applied=False, hack_reward=hack_reward,
@@ -604,9 +603,6 @@ async def _harden_task_phases(
                 result["status"] = "robust"
                 result["hardened_dir"] = str(hardened_task_dir)
                 _save_result(config.result_path, result)
-                # Cache-warm the failed-trial summary so the journal shows
-                # what the hacker tried even on the robust terminus.
-                await _summarize_hack_attempt(config, hacker_trial)
                 await _record_iter_in_journal(
                     config, iteration=iteration, outcome="hacker_failed",
                     fix_applied=False, hack_reward=hack_reward,
