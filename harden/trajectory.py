@@ -107,7 +107,7 @@ async def llm_summarize_trajectory(
     evidence = summarizer.collect_evidence(trial_dir, ctx)
 
     try:
-        import litellm
+        from harden.llm import acompletion_with_retry
 
         chunks = _chunk_text_by_lines(raw, _TRAJECTORY_CHUNK_CHARS) if raw else [""]
         truncated_evidence = {
@@ -147,7 +147,7 @@ async def llm_summarize_trajectory(
             if reasoning_effort is not None:
                 completion_kwargs["reasoning_effort"] = reasoning_effort
 
-            response = await litellm.acompletion(**completion_kwargs)
+            response = await acompletion_with_retry(**completion_kwargs)
             prior = summarizer.response_model.model_validate_json(
                 response.choices[0].message.content
             )

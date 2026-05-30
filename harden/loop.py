@@ -170,7 +170,17 @@ async def _record_iter_in_journal(
 def _hacker_privileged_enabled(cfg: HardenConfig, iteration: int) -> bool:
     if not cfg.hacker_privileged:
         return False
+    if cfg.hacker_privileged_enable_iteration is not None:
+        return iteration >= cfg.hacker_privileged_enable_iteration
     return iteration < cfg.hacker_privileged_disable_iteration
+
+
+def _can_mark_robust(cfg: HardenConfig, privileged_hack_ran: bool) -> bool:
+    if cfg.hacker_privileged_enable_iteration is None:
+        return True
+    if not cfg.hacker_privileged:
+        return True
+    return privileged_hack_ran
 
 
 async def _run_targeted_replay(
@@ -419,6 +429,11 @@ async def _harden_task_phases(
     failed_hack_trials: list[Path] = []
     # Once hardened/ diverges from the base image, every build must use force_build + harden image.
     hardened_dirty: bool = False
+    # Tracks whether any iter has actually run the hacker with privileges. Only
+    # consulted when cfg.hacker_privileged_enable_iteration is set — see
+    # `_can_mark_robust`: a non-privileged hacker failure cannot terminate the
+    # run in that mode.
+    privileged_hack_ran: bool = False
 
     # Pooled (jumper) state — PoolCursor owns the advance/persist invariant.
     pool_cursor: PoolCursor | None = None
@@ -550,6 +565,8 @@ async def _harden_task_phases(
                         image_name=harden_image if hacker_needs_rebuild else _resolve_image_name(config),
                         kernelbench_mode=config.kernelbench_mode,
                     )
+                    if hacker_privileged_modified:
+                        privileged_hack_ran = True
                     if hack_reward >= config.hack_threshold:
                         hack_succeeded = True
                         break
@@ -559,16 +576,33 @@ async def _harden_task_phases(
                     await _summarize_hack_attempt(config, hacker_trial)
 
             if not hack_succeeded:
-                logger.info("Hacker failed all %d attempts. Task is robust!", config.hacker_retries)
                 iter_info["hack_reward"] = hack_reward
                 iter_info["outcome"] = "hacker_failed"
+                if not _can_mark_robust(config, privileged_hack_ran):
+                    logger.info(
+                        "Hacker failed all %d attempts, but --hacker-privileged-enable-iteration=%d "
+                        "is set and no privileged hacker has run yet — not marking robust; continuing.",
+                        config.hacker_retries, config.hacker_privileged_enable_iteration,
+                    )
+                    result["iterations"].append(iter_info)
+                    _save_result(config.result_path, result)
+                    await _record_iter_in_journal(
+                        config, iteration=iteration, outcome="hacker_failed",
+                        fix_applied=False, hack_reward=hack_reward,
+                        hack_summary=extract_hack_summary(hacker_trial), fixer_trial=None,
+                        notes=(
+                            f"Hacker failed all {config.hacker_retries} attempts but "
+                            f"privileged hacker has not yet run; continuing."
+                        ),
+                    )
+                    failed_hack_trials = []
+                    yield  # ── iteration fence: keep batch driver in lockstep ─
+                    continue
+                logger.info("Hacker failed all %d attempts. Task is robust!", config.hacker_retries)
                 result["iterations"].append(iter_info)
                 result["status"] = "robust"
                 result["hardened_dir"] = str(hardened_task_dir)
                 _save_result(config.result_path, result)
-                # Cache-warm the failed-trial summary so the journal shows
-                # what the hacker tried even on the robust terminus.
-                await _summarize_hack_attempt(config, hacker_trial)
                 await _record_iter_in_journal(
                     config, iteration=iteration, outcome="hacker_failed",
                     fix_applied=False, hack_reward=hack_reward,
@@ -720,7 +754,9 @@ async def _harden_task_phases(
                 iter_info["fix_applied"] = False
                 if pool_cursor is not None:
                     pool_cursor.persist()
-                if legitimate_streak >= config.legitimate_threshold:
+                if legitimate_streak >= config.legitimate_threshold and _can_mark_robust(
+                    config, privileged_hack_ran
+                ):
                     logger.info("Confirmed legitimate after %d consecutive flags. Task is robust.",
                                 config.legitimate_threshold)
                     result["iterations"].append(iter_info)
@@ -735,6 +771,13 @@ async def _harden_task_phases(
                     )
                     result_out.append(result)
                     return  # done — exits before validate yield
+                if legitimate_streak >= config.legitimate_threshold:
+                    logger.info(
+                        "Legitimate streak %d/%d reached but --hacker-privileged-enable-iteration=%d "
+                        "is set and no privileged hacker has run yet — not marking robust; continuing.",
+                        legitimate_streak, config.legitimate_threshold,
+                        config.hacker_privileged_enable_iteration,
+                    )
                 reuse_hack = None
                 previous_failure = None
                 previous_outcome = None
