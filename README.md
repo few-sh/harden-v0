@@ -49,8 +49,8 @@ cd harden-v0
 # Recommended: a virtual environment
 python -m venv .venv && source .venv/bin/activate
 
-# Core Python dependencies
-pip install harbor litellm pyyaml tqdm   # TODO: pin versions / publish requirements.txt
+# Dependencies
+pip install -r requirements.txt
 ```
 
 Set API credentials via environment variables (litellm reads the standard
