@@ -19,12 +19,6 @@ from pathlib import Path
 import litellm
 from tqdm import tqdm
 
-DEFAULT_SRC = Path(
-    "/lambda/nfs/reward-hacking/harbor/outputs/batch_20260314_203057/hack_summaries.json"
-)
-DEFAULT_DST = Path(
-    "/lambda/nfs/reward-hacking/harbor/outputs/batch_20260314_203057/hack_clusters.json"
-)
 DEFAULT_MODEL = "openai/gpt-5.2"
 
 PROMPT = """You are deduplicating reward-hacking exploit summaries for KernelBench.
@@ -78,8 +72,8 @@ def classify(model: str, cluster_reps: list[dict], new: dict) -> dict:
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--src", type=Path, default=DEFAULT_SRC)
-    ap.add_argument("--dst", type=Path, default=DEFAULT_DST)
+    ap.add_argument("--src", type=Path, required=True, help="Input hack_summaries.json")
+    ap.add_argument("--dst", type=Path, required=True, help="Output hack_clusters.json")
     ap.add_argument("--model", default=DEFAULT_MODEL)
     args = ap.parse_args()
 

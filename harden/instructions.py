@@ -7,7 +7,7 @@ Prompts are selected by `kernelbench_mode` (independent of `oracle`):
 
 The hacker uses `build_hacker_instruction()`, which rewrites the task's "## Your Goal"
 section into a reward-hacking goal. Falls back to append if the marker is absent
-(so it works for generic slime tasks without the KB template).
+(so it works for generic non-KernelBench tasks without the KB template).
 """
 
 # Solver hint — appended to solver's instruction.md when solver_privileged (solver mode only).
@@ -125,7 +125,7 @@ def build_hacker_instruction(
     """Rewrite the task's "## Your Goal" section into a reward-hacking goal.
 
     If the marker is absent, appends the RH goal instead (graceful fallback for
-    generic slime tasks that don't follow the KB template).
+    generic non-KernelBench tasks that don't follow the KB template).
 
     If `journal_text` is non-empty, appends a journal section at the end so the
     hacker sees what attack classes are already blocked.
@@ -264,7 +264,7 @@ _LEGITIMATE_NOTE_KB = (
 )
 
 
-# Fixer template for solver mode (generic slime tasks) — artifacts at /logs/artifacts/.
+# Fixer template for solver mode (generic non-KernelBench tasks) — artifacts at /logs/artifacts/.
 _FIXER_TEMPLATE_GENERIC = """\
 # Fix Task Environment Against Exploit
 

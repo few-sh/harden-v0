@@ -15,7 +15,7 @@ Two orthogonal mode flags:
             = "exploit the verification system", generic fixer template.
 
 The two commonly travel together (KernelBench tasks set both True; generic
-slime tasks set both False) but are decoupled because nothing forces the
+non-KernelBench tasks set both False) but are decoupled because nothing forces the
 coupling: a task with a deterministic reference could still use generic
 prompts, or vice versa.
 """
@@ -26,7 +26,6 @@ import json
 from dataclasses import dataclass, field
 from pathlib import Path
 
-DEFAULT_TASKS_DIR = Path("/lambda/nfs/reward-hacking/harbor/datasets/kernelbench")
 DEFAULT_MODEL = "gemini/gemini-3.1-pro-preview"
 
 # Mechanical fields that don't affect agent behavior — excluded from the
@@ -51,7 +50,7 @@ _FINGERPRINT_EXCLUDE = frozenset({
 @dataclass
 class HardenConfig:
     task_id: str = ""
-    tasks_dir: Path = DEFAULT_TASKS_DIR
+    tasks_dir: Path = Path("tasks")
     output_dir: Path = Path("./harden_output")
 
     # Pre-check: True => deterministic oracle, False => agent solver.

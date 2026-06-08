@@ -1,0 +1,13 @@
+# Runtime dependencies for the hacker-fixer loop (`python -m harden`).
+# Versions intentionally unpinned.
+
+harbor          # Terminus-2 agent / task-container runner (harbor-framework/harbor)
+litellm         # LLM API routing
+pydantic        # config / data models
+tenacity        # retry logic
+PyYAML          # Harbor config files
+python-dotenv   # .env loading
+tqdm            # progress bars
+
+# Optional — only for hodoscope_pipeline/ (hack-trajectory embedding analysis):
+# hodoscope
