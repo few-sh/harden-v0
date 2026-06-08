@@ -37,8 +37,8 @@ Requirements:
 - **Python ≥ 3.12**
 - **Docker** (Linux Engine ≥ 20.10 required for `--pool-enabled`; it relies on
   `host.docker.internal:host-gateway`, which is Linux-only)
-- **[Harbor](https://github.com/laude-institute/terminal-bench)** — runs the
-  Terminus-2 agents inside task containers <!-- TODO: confirm the exact Harbor package / install source -->
+- **[Harbor](https://github.com/harbor-framework/harbor)** — runs the
+  Terminus-2 agents inside task containers
 - An LLM API key for your chosen models (routed via
   [`litellm`](https://github.com/BerriAI/litellm); e.g. Gemini, Anthropic)
 

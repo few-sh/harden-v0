@@ -1,7 +1,7 @@
 # Runtime dependencies for the hacker-fixer loop (`python -m harden`).
 # Versions intentionally unpinned.
 
-harbor          # Terminus-2 agent / task-container runner (see README for install source)
+harbor          # Terminus-2 agent / task-container runner (harbor-framework/harbor)
 litellm         # LLM API routing
 pydantic        # config / data models
 tenacity        # retry logic
