@@ -23,8 +23,8 @@ Two independent flags control the loop:
   `test_outputs.py`, verifier-bypass hacker goal, generic fixer template) if
   not.
 
-The two commonly travel together (KernelBench runs pass both, generic slime
-tasks pass neither), but they're decoupled because nothing forces the
+The two commonly travel together (KernelBench runs pass both, generic
+non-KernelBench tasks pass neither), but they're decoupled because nothing forces the
 coupling — a generic task with a deterministic reference could use `--oracle`
 alone, and a KB-style framing could conceivably run with an agent solver.
 
@@ -63,35 +63,41 @@ Both drivers share the same `asyncio.Semaphore(max_concurrent_containers)` acqui
 ## Module layout
 
 ```
-harden-unified/
+harden-v0/
   harden/
     __main__.py       # CLI (python -m harden)
     config.py         # HardenConfig / BatchHardenConfig
     loop.py           # harden_task + _run_solver dispatch
     agent.py          # run_hacker / run_oracle_solver / run_solver_agent / run_fixer
+    llm.py            # retry wrapper around litellm.acompletion
     instructions.py   # build_hacker_instruction + build_targeted_replay_instruction + FIXER templates + SOLVER_HINT
+    journal.py        # per-task hacker+fixer journal (shared between the two roles)
+    durable.py        # JSON-backed durable-computation decorator (granular resume)
+    precheck_cache.py # content-addressed cache for original-task solver prechecks
     workspace.py      # working copies, artifact extraction, prepare_*_environment
     batch.py          # harden_batch (async with semaphore + stagger)
     pool.py           # PoolServer (jumper mode): bare repo + git daemon + host-side helpers
     trajectory.py     # ATIF trajectory → summary
+  prompts/            # default fixer guidance (fixer_guidance.md; override via --fixer-prompt-file)
+  hook_scripts/       # runtime: hooks.sh, launched by agent.py inside each job
   harden.py           # Convenience entry point
   monitor.py          # Live batch progress monitor
   batch_stats.py      # Quick stats for in-progress batches
-  scripts/            # Example experiment run scripts
-  hodoscope_pipeline/ # Pack successful hacks → embedding analysis
   merge_defenses.py   # Sequential compound-merge of defenses across tasks
   dedup_hacks.py      # LLM-based cluster dedup of hack summaries
   probe_hints.py      # Hint-injection probe — tests defense robustness
+  hodoscope_pipeline/ # Pack successful hacks → embedding analysis
+  scripts/            # reusable eval tooling: replay.py, judge_trials.py, prompts/
 ```
 
 ## Running
 
 ```bash
-source /lambda/nfs/reward-hacking/.env
+source .env   # provider API keys for litellm
 
-# Solver mode (default, generic slime tasks)
+# Solver mode (default, generic tasks)
 python -m harden --task-id <task-id> \
-  --tasks-dir /lambda/nfs/reward-hacking/slime-internal/tasks \
+  --tasks-dir ./tasks \
   --solver-model gemini/gemini-3.1-pro-preview \
   --solver-privileged \
   --max-iterations 5
@@ -123,6 +129,10 @@ python -m harden --oracle --all --hacker-privileged \
 - `--solver-privileged` (solver mode) — inject `/solution/` into solver env as hint.
 - `--hacker-privileged` — mount the evaluation environment (tests/, environment/) read-only at `/eval_env/` so the hacker can whitebox-inspect the verifier.
 - `--hacker-feedback` — give hacker read-only access to previous failed attempts.
+- `--hacker-privileged-enable-iteration` / `--hacker-privileged-disable-iteration` — turn verifier access on/off starting at a given iteration.
+- `--summary-model` — model used for hack / trajectory / journal summaries (defaults derived from the role models).
+- `--no-journal`, `--journal-compact-max-iters` — the per-task hacker+fixer journal is on by default; disable it or tune when it compacts.
+- `--fixer-prompt-file`, `--fixer-prompt-after-iter` — inject extra fixer guidance from a file, optionally only from iteration N onward.
 - `--replay-enabled`, `--replay-retries` — enable targeted-replay post-solver gate; a constrained hacker re-attempts the prior exploit on the patched task, and the fix is rejected if it re-lands. Reuses hacker model/turns/timeout knobs, and inherits `--hacker-privileged` (if the hacker had `/eval_env/` access, replay does too — the exploit may reference it).
 - `--pool-enabled`, `--pool-bootstrap-dir <hardened_task_dir>`, `--pool-port <N>` — enable jumper / pooled mode. Opt-in; default off. Host-side `git daemon` serves a bare pool repo at `<output_dir>/pool.git`; fixer containers clone/push to `git://host.docker.internal:<port>/pool.git`. Port auto-bumps on conflict.
 - `--pool-integrate-bootstrap` — flip the batch driver's pool-cursor seeding policy: instead of seeding fresh tasks to current pool HEAD (default, skip integration), leave the cursor empty so iter 0 becomes a skip-hacker pool-sync iter that ports the bootstrap into local. Only useful when `--pool-bootstrap-dir` is a task-agnostic defense scaffold; for KernelBench-style bootstraps that include a task-specific `reference.py`, leave this off (it would corrupt sibling tasks).
