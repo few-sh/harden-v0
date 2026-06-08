@@ -2,7 +2,7 @@
 
 KERNELBENCH-ONLY. The ALLOWLIST and prompt are hard-wired to the KB eval
 pipeline (`tests/eval_kernel.py`, `environment/Dockerfile`, `tests/test.sh`).
-Generic-mode (slime) hardened batches won't have `eval_kernel.py` and this
+Generic-mode (non-KernelBench) hardened batches won't have `eval_kernel.py` and this
 script will silently merge nothing useful — don't run it on non-KB outputs.
 
 For each donor task, ask the LLM whether the donor's hack+fix reveals a gap
@@ -29,9 +29,6 @@ from pathlib import Path
 import litellm
 from tqdm import tqdm
 
-DEFAULT_BATCH = Path("/lambda/nfs/reward-hacking/harbor/outputs/batch_20260314_203057")
-DEFAULT_DATASET = Path("/lambda/nfs/reward-hacking/harbor/datasets/kernelbench")
-DEFAULT_OUT = Path("/mnt/disk-rh/harbor/harden-kb/outputs/merged_defense")
 DEFAULT_MODEL = "openai/gpt-5.2"
 DEFAULT_SEED = "kernelbench-level1-001-square-matrix-multiplication"
 
@@ -357,9 +354,10 @@ def run_pass(
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--seed-task-id", default=DEFAULT_SEED)
-    ap.add_argument("--batch-dir", type=Path, default=DEFAULT_BATCH)
-    ap.add_argument("--dataset-dir", type=Path, default=DEFAULT_DATASET)
-    ap.add_argument("--out-dir", type=Path, default=DEFAULT_OUT)
+    ap.add_argument("--batch-dir", type=Path, required=True,
+                    help="Harden batch output dir (per-task hardened states)")
+    ap.add_argument("--dataset-dir", type=Path, required=True, help="Task dataset dir")
+    ap.add_argument("--out-dir", type=Path, default=Path("merged_defense"))
     ap.add_argument("--model", default=DEFAULT_MODEL)
     ap.add_argument("--max-donors", type=int, default=None)
     ap.add_argument("--dry-run", action="store_true")

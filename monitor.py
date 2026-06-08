@@ -291,7 +291,7 @@ def resolve_batch_dir(arg=None):
 
 def main():
     args = sys.argv[1:]
-    tasks_dir = Path("/lambda/nfs/reward-hacking/harbor/datasets/kernelbench")
+    tasks_dir = Path("tasks")
 
     if args and args[0] == "show":
         if len(args) < 2:
