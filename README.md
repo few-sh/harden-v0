@@ -2,6 +2,8 @@
 
 **Adversarial hardening of agent-benchmark verifiers via the hacker–fixer loop.**
 
+📄 [Paper](https://arxiv.org/abs/2606.08960) · 📦 [KernelBench artifact](https://github.com/fjzzq2002/harden-kb-traces)
+
 This repository implements the **hacker–fixer loop** from [*Hardening Agent Benchmarks with Adversarial Hacker-Fixer Loops*](https://arxiv.org/abs/2606.08960). It builds exploit-resistant outcome verifiers without per-task manual patching by pitting three LLM agents against each other.
 
 > 🚧 **Actively developed.** This is a living package — the API, CLI flags, and internals may change as we extend it. Run `python -m harden --help` for the authoritative flag list.
@@ -100,14 +102,6 @@ Run `python -m harden --help` for the full list.
 | `--fixer-prompt-file` / `--fixer-prompt-after-iter` | inject extra fixer guidance from a file, optionally only after iteration N |
 | `--no-legitimate-marker` | disable the `.legitimate` sentinel (fixer can't flag a hack as legitimate) |
 | `--image-name` | tag isolation for concurrent runs (accepts a `{task_id}` placeholder) |
-
-## KernelBench results & traces
-
-Our KernelBench Level-1 results in the paper are released in a companion repo:
-**[harden-kb-traces](https://github.com/fjzzq2002/harden-kb-traces)** — the final
-hardened verifiers (defenses), per-iteration outcome records, and compact agent
-trajectories for all 100 tasks across the four ablations, plus the autopatched
-final verifiers and their held-out attack evaluations.
 
 ## Citation
 
