@@ -2,7 +2,7 @@
 
 **Adversarial hardening of agent-benchmark verifiers via the hacker–fixer loop.**
 
-This repository implements the **hacker–fixer loop** from *Hardening Agent Benchmarks with Adversarial Hacker-Fixer Loops*. It builds exploit-resistant outcome verifiers without per-task manual patching by pitting three LLM agents against each other.
+This repository implements the **hacker–fixer loop** from [*Hardening Agent Benchmarks with Adversarial Hacker-Fixer Loops*](https://arxiv.org/abs/2606.08960). It builds exploit-resistant outcome verifiers without per-task manual patching by pitting three LLM agents against each other.
 
 > 🚧 **Actively developed.** This is a living package — the API, CLI flags, and internals may change as we extend it. Run `python -m harden --help` for the authoritative flag list.
 
@@ -116,6 +116,7 @@ final verifiers and their held-out attack evaluations.
   title   = {Hardening Agent Benchmarks with Adversarial Hacker-Fixer Loops},
   author  = {Zhong, Ziqian and Segal, Ivgeni and Bercovich, Ivan and
              Saxena, Shashwat and Zhang, Kexun and Raghunathan, Aditi},
+  journal = {arXiv preprint arXiv:2606.08960},
   year    = {2026}
 }
 ```
