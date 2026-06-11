@@ -302,16 +302,19 @@ def _mark_interrupted(path: Path) -> None:
     """Flip a mid-flight result.json to status="interrupted" on cancellation.
 
     Terminal statuses (robust, max_iterations, …) are saved before the loop
-    exits, so only an in-flight "unknown" is rewritten. A missing or corrupt
-    file is left alone — marking must never mask the cancellation itself.
+    exits, so only an in-flight "unknown" is rewritten. Best-effort: a missing
+    or corrupt file, or a failed write (read-only FS, full disk, …), is logged
+    and swallowed — marking must never mask the cancellation itself. Catching
+    Exception (not BaseException) leaves the CancelledError/KeyboardInterrupt
+    that brought us here free to propagate.
     """
     try:
-        result = json.loads(path.read_text())
-    except (OSError, json.JSONDecodeError):
-        return
-    if isinstance(result, dict) and result.get("status") == "unknown":
-        result["status"] = "interrupted"
-        _save_result(path, result)
+        result = json.loads(path.read_text(encoding="utf-8"))
+        if isinstance(result, dict) and result.get("status") == "unknown":
+            result["status"] = "interrupted"
+            _save_result(path, result)
+    except Exception as e:
+        logger.warning("Could not mark %s as interrupted: %s", path, e)
 
 
 async def _harden_task_phases(
