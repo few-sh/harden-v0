@@ -58,6 +58,7 @@ from .workspace import (
     extract_fixer_artifacts,
     prepare_fixer_environment,
     prepare_hacker_environment,
+    prepare_hacker_patch_capture,
     prepare_journal_mount,
     prepare_privileged_hacker_environment,
     prepare_solver_environment,
@@ -123,6 +124,7 @@ async def _record_iter_in_journal(
     hack_reward: float | None,
     hack_summary: str | None,
     fixer_trial: Path | None,
+    hacker_trial: Path | None = None,
     notes: str | None = None,
     failure_detail: str | None = None,
 ) -> None:
@@ -132,7 +134,9 @@ async def _record_iter_in_journal(
     scope via `extract_hack_summary(hacker_trial)` at each call site, or
     the reused-hack tuple). Pass None on pool-sync iters and when no hack
     ran. ``fixer_trial`` is summarized inline (the fix summary isn't cached
-    upstream).
+    upstream). ``hacker_trial`` is the trial whose /app diff becomes this
+    iter's hacker patch — pass None on pool-sync/reused-hack iters (no fresh
+    hack ran, so there's nothing new to diff).
 
     Only the accepted-fix path (``fix_applied=True``) triggers a ledger
     refresh — reverted/replay-broken iters write the per-iter file but
@@ -157,6 +161,7 @@ async def _record_iter_in_journal(
             hack_summary=hack_summary,
             fix_summary=fix_summary,
             fixer_trial=fixer_trial,
+            hacker_trial=hacker_trial,
             notes=notes,
             failure_detail=failure_detail,
             ledger_model=ledger_model or None,
@@ -488,6 +493,10 @@ async def _harden_task_phases(
         }
         logger.info("=== Iteration %d ===", iteration)
 
+        # The hacker trial whose /app diff becomes this iter's hacker patch.
+        # Stays None on pool-sync / reused-hack iters (no fresh hack runs).
+        current_hacker_trial: Path | None = None
+
         # Pool advance check (pooled mode only). iter_start() bumps the in-memory
         # cursor but does not persist — a crash mid-iter won't silently "consume"
         # pool commits we never actually integrated.
@@ -537,6 +546,9 @@ async def _harden_task_phases(
         else:
             hack_succeeded = False
             attempt_failed_trials: list[Path] = []
+            # Defensive: --hacker-retries 0 would skip the loop below, leaving
+            # hacker_trial unbound when we read it after.
+            hacker_trial: Path | None = None
             hack_reward = 0.0
             journal_text = (
                 journal.read_compact(config.task_output_dir)
@@ -571,8 +583,17 @@ async def _harden_task_phases(
                             hacker_parent, config.task_id, config.task_output_dir,
                         )
 
+                    # Git-baseline /app so the hacker's exploit can be diffed
+                    # host-side (see journal._write_hacker_patch). Always-on, so
+                    # it forces a rebuild — but after iter 0 the journal mount
+                    # already does, so the extra cost is at most one build.
+                    patch_capture_modified = prepare_hacker_patch_capture(
+                        hacker_parent, config.task_id,
+                    )
+
                     hacker_dockerfile_modified = (
-                        hacker_privileged_modified or hacker_feedback_modified or journal_modified
+                        hacker_privileged_modified or hacker_feedback_modified
+                        or journal_modified or patch_capture_modified
                     )
                     hacker_needs_rebuild = hacker_dockerfile_modified or hardened_dirty
                     hack_reward, hacker_trial = await run_hacker(
@@ -600,6 +621,10 @@ async def _harden_task_phases(
                     attempt_failed_trials.append(hacker_trial)
                     await _summarize_hack_attempt(config, hacker_trial)
 
+            # A fresh hack ran this iter (succeeded, or the last failed attempt);
+            # its /app diff is this iter's hacker patch.
+            current_hacker_trial = hacker_trial
+
             if not hack_succeeded:
                 iter_info["hack_reward"] = hack_reward
                 iter_info["outcome"] = "hacker_failed"
@@ -615,6 +640,7 @@ async def _harden_task_phases(
                         config, iteration=iteration, outcome="hacker_failed",
                         fix_applied=False, hack_reward=hack_reward,
                         hack_summary=extract_hack_summary(hacker_trial), fixer_trial=None,
+                        hacker_trial=current_hacker_trial,
                         notes=(
                             f"Hacker failed all {config.hacker_retries} attempts but "
                             f"privileged hacker has not yet run; continuing."
@@ -632,6 +658,7 @@ async def _harden_task_phases(
                     config, iteration=iteration, outcome="hacker_failed",
                     fix_applied=False, hack_reward=hack_reward,
                     hack_summary=extract_hack_summary(hacker_trial), fixer_trial=None,
+                    hacker_trial=current_hacker_trial,
                     notes=f"Hacker failed all {config.hacker_retries} attempts; task is robust.",
                 )
                 result_out.append(result)
@@ -792,6 +819,7 @@ async def _harden_task_phases(
                         config, iteration=iteration, outcome="legitimate",
                         fix_applied=False, hack_reward=hack_reward,
                         hack_summary=hack_summary, fixer_trial=fixer_trial,
+                        hacker_trial=current_hacker_trial,
                         notes=f"Confirmed legitimate after {config.legitimate_threshold} consecutive flags.",
                     )
                     result_out.append(result)
@@ -815,6 +843,7 @@ async def _harden_task_phases(
                     config, iteration=iteration, outcome="legitimate",
                     fix_applied=False, hack_reward=hack_reward,
                     hack_summary=hack_summary, fixer_trial=fixer_trial,
+                    hacker_trial=current_hacker_trial,
                 )
                 # fall through to validate yield (no container work needed)
 
@@ -947,6 +976,7 @@ async def _harden_task_phases(
                     config, iteration=iteration, outcome=iter_info["outcome"],
                     fix_applied=fix_applied, hack_reward=hack_reward,
                     hack_summary=hack_summary, fixer_trial=fixer_trial,
+                    hacker_trial=current_hacker_trial,
                     failure_detail=failure_detail,
                 )
 

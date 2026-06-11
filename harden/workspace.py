@@ -167,6 +167,66 @@ def prepare_hacker_environment(
     dockerfile.write_text(content)
 
 
+def prepare_hacker_patch_capture(hacker_parent: Path, task_id: str) -> bool:
+    """Bake a git baseline of /app into the hacker image for host-side diffing.
+
+    The hacker's exploit lives in its working dir (/app). Harbor collects /app
+    as ``artifacts/app`` at trial end, so if we tag the pristine /app as
+    ``initial`` at build time, the host can later diff the hacker's changes —
+    see journal._write_hacker_patch. This mirrors the fixer patch, which diffs
+    the bind-mounted /logs/artifacts repo; /app is baked into the image (not
+    bind-mounted), so a build-time tag persists into the running container and
+    needs no entrypoint.
+
+    Best-effort and non-fatal: a ``USER root`` (restored after) maximizes the
+    chance the RUN can install git / write /app, and every command is suffixed
+    ``|| true`` so a base image without apt, or an unwritable /app, degrades to
+    "no patch" rather than failing the build. The ``--allow-empty`` initial
+    commit guarantees the ``initial`` tag exists even when /app starts empty.
+
+    Returns True if the Dockerfile was modified (always, if it exists) so the
+    caller can flag the image for a rebuild.
+    """
+    task_dir = hacker_parent / task_id
+    env_dir = task_dir / "environment"
+    dockerfile = env_dir / "Dockerfile"
+    if not dockerfile.exists():
+        return False
+
+    content = dockerfile.read_text(encoding="utf-8")
+
+    # Restore the image's runtime user after the root-owned baseline step, so we
+    # don't change which user the hacker agent runs as (mirrors
+    # prepare_solver_environment's last-USER handling).
+    last_user = None
+    for line in content.splitlines():
+        stripped = line.strip()
+        if stripped.upper().startswith("USER "):
+            last_user = stripped[5:].strip()
+    restore = f"USER {last_user}\n" if last_user and last_user != "root" else ""
+
+    content += (
+        "\n# Added by harden: git-baseline /app (tag `initial`) so the hacker's\n"
+        "# working-dir changes (the exploit) can be diffed host-side. Best-effort\n"
+        "# — never fails the build.\n"
+        "USER root\n"
+        "RUN (which git >/dev/null 2>&1 || "
+        "(apt-get update -qq && apt-get install -y -qq git >/dev/null 2>&1)) || true\n"
+        # safe.directory='*' so git doesn't refuse on /app when it's owned by a
+        # non-root task user (we run this as root); --allow-empty so the tag
+        # exists even for an empty /app.
+        "RUN (git config --global --add safe.directory '*' && "
+        "mkdir -p /app && cd /app && git init -q && "
+        "git config user.email harden@localhost && git config user.name harden && "
+        # tag -f so a pre-existing `initial` (a task that ships its own /app
+        # git repo) doesn't make the chain fail and silently drop the patch.
+        "git add -A && git commit -q --allow-empty -m initial && git tag -f initial) || true\n"
+        + restore
+    )
+    dockerfile.write_text(content, encoding="utf-8")
+    return True
+
+
 def prepare_journal_mount(
     working_copy_parent: Path,
     task_id: str,
