@@ -298,6 +298,25 @@ def _save_result(path: Path, result: dict) -> None:
     path.write_text(json.dumps(result, indent=2, default=str))
 
 
+def _mark_interrupted(path: Path) -> None:
+    """Flip a mid-flight result.json to status="interrupted" on cancellation.
+
+    Terminal statuses (robust, max_iterations, …) are saved before the loop
+    exits, so only an in-flight "unknown" is rewritten. Best-effort: a missing
+    or corrupt file, or a failed write (read-only FS, full disk, …), is logged
+    and swallowed — marking must never mask the cancellation itself. Catching
+    Exception (not BaseException) leaves the CancelledError/KeyboardInterrupt
+    that brought us here free to propagate.
+    """
+    try:
+        result = json.loads(path.read_text(encoding="utf-8"))
+        if isinstance(result, dict) and result.get("status") == "unknown":
+            result["status"] = "interrupted"
+            _save_result(path, result)
+    except Exception as e:
+        logger.warning("Could not mark %s as interrupted: %s", path, e)
+
+
 async def _harden_task_phases(
     config: HardenConfig,
     pool_server: PoolServer | None,
@@ -346,6 +365,12 @@ async def _harden_task_phases(
         "pool_enabled": pooled,
         "kernelbench_mode": config.kernelbench_mode,
     }
+    # Persist the skeleton immediately. A single iteration can run for an hour,
+    # so a run interrupted before its first post-iteration save (Ctrl-C, CI
+    # timeout) would otherwise leave no result.json at all; with this, every
+    # interrupt finds a parseable result holding the iterations completed so
+    # far (each later mutation re-saves over it).
+    _save_result(config.result_path, result)
 
     hardened_parent = create_hardened_copy(original_dir, output, resume=config.resume)
     hardened_task_dir = hardened_parent / config.task_id
@@ -945,6 +970,12 @@ async def harden_task(
     """
     semaphore = asyncio.Semaphore(1)  # single-task: no concurrency limit needed
     result_out: list = []
-    async for _ in _harden_task_phases(config, pool_server, semaphore, result_out):
-        pass
+    try:
+        async for _ in _harden_task_phases(config, pool_server, semaphore, result_out):
+            pass
+    except (asyncio.CancelledError, KeyboardInterrupt):
+        # Ctrl-C / external timeout: record the interruption in the on-disk
+        # result (saved incrementally since loop start) before unwinding.
+        _mark_interrupted(config.result_path)
+        raise
     return result_out[0]
