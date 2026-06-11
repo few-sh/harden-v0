@@ -330,9 +330,13 @@ def _write_hacker_patch(
                 env=env, capture_output=True, text=True, timeout=30,
             )
     except (OSError, subprocess.SubprocessError) as exc:
+        # CalledProcessError's str() omits stderr, but we captured it — surface
+        # it so a failed read-tree/add (e.g. missing `initial`) is debuggable.
+        stderr = getattr(exc, "stderr", None)
+        detail = f"\n{stderr.strip()}" if stderr else ""
         logger.warning(
-            "Could not build hacker patch for iter %d (%s): %s",
-            iteration, app, exc,
+            "Could not build hacker patch for iter %d (%s): %s%s",
+            iteration, app, exc, detail,
         )
         return
     if result.returncode != 0:

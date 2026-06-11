@@ -193,7 +193,7 @@ def prepare_hacker_patch_capture(hacker_parent: Path, task_id: str) -> bool:
     if not dockerfile.exists():
         return False
 
-    content = dockerfile.read_text()
+    content = dockerfile.read_text(encoding="utf-8")
 
     # Restore the image's runtime user after the root-owned baseline step, so we
     # don't change which user the hacker agent runs as (mirrors
@@ -218,10 +218,12 @@ def prepare_hacker_patch_capture(hacker_parent: Path, task_id: str) -> bool:
         "RUN (git config --global --add safe.directory '*' && "
         "mkdir -p /app && cd /app && git init -q && "
         "git config user.email harden@localhost && git config user.name harden && "
-        "git add -A && git commit -q --allow-empty -m initial && git tag initial) || true\n"
+        # tag -f so a pre-existing `initial` (a task that ships its own /app
+        # git repo) doesn't make the chain fail and silently drop the patch.
+        "git add -A && git commit -q --allow-empty -m initial && git tag -f initial) || true\n"
         + restore
     )
-    dockerfile.write_text(content)
+    dockerfile.write_text(content, encoding="utf-8")
     return True
 
 

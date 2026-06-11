@@ -546,6 +546,9 @@ async def _harden_task_phases(
         else:
             hack_succeeded = False
             attempt_failed_trials: list[Path] = []
+            # Defensive: --hacker-retries 0 would skip the loop below, leaving
+            # hacker_trial unbound when we read it after.
+            hacker_trial: Path | None = None
             hack_reward = 0.0
             journal_text = (
                 journal.read_compact(config.task_output_dir)
