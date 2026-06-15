@@ -21,7 +21,9 @@ memory.
 
 import json
 import logging
+import os
 import subprocess
+import tempfile
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -280,6 +282,76 @@ def _write_fixer_patch(
     _atomic_write(jdir / f"iter_{iteration}.patch", result.stdout)
 
 
+def _write_hacker_patch(
+    jdir: Path,
+    iteration: int,
+    hacker_trial: Path | None,
+) -> None:
+    """Write `journal/iter_<N>_hacker.patch` with the hacker's /app changes.
+
+    The hacker's working dir (/app) is git-baselined at image-build time
+    (workspace.prepare_hacker_patch_capture tags `initial`), and Harbor
+    collects /app as ``artifacts/app`` at trial end. We diff that collected
+    working tree against `initial`, staging into a throwaway index so the
+    published artifact's own index is untouched. ``read-tree initial`` before
+    ``add -A`` means deletions are captured too, and ``--binary`` keeps binary
+    adds/edits in the patch.
+
+    This is the hacker's exploit as a diff — scoped to /app, the dir we get
+    back. Files the (privileged) hacker changes outside /app (OS files, /tests)
+    aren't captured: a true container-wide ``docker diff`` would need a live
+    container, which Modal trials don't expose to us.
+
+    Best-effort, like _write_fixer_patch: a missing repo / absent `initial`
+    tag / git error logs a warning and skips; an empty diff writes no file.
+    """
+    if hacker_trial is None:
+        return
+    app = hacker_trial / "artifacts" / "app"
+    if not (app / ".git").is_dir():
+        # No baseline repo — task bind-mounts /app, build-time capture failed,
+        # or /app wasn't collected. Nothing to diff against.
+        return
+    git = ["git", "-c", "safe.directory=*", "-C", str(app)]
+    try:
+        # Stage into a throwaway index (in its own temp dir, so it works
+        # whether or not jdir exists yet and never touches the published
+        # artifact's own index). Seed it from `initial`, then restage the
+        # working tree: the index now mirrors the final /app, so
+        # diff-vs-initial shows the hacker's adds, edits, and deletes.
+        with tempfile.TemporaryDirectory() as td:
+            env = {**os.environ, "GIT_INDEX_FILE": str(Path(td) / "index")}
+            subprocess.run(git + ["read-tree", "initial"], env=env,
+                           capture_output=True, text=True, timeout=30, check=True)
+            subprocess.run(git + ["add", "-A"], env=env,
+                           capture_output=True, text=True, timeout=120, check=True)
+            result = subprocess.run(
+                git + ["diff", "--binary", "--cached", "initial"],
+                env=env, capture_output=True, text=True, timeout=30,
+            )
+    except (OSError, subprocess.SubprocessError) as exc:
+        # CalledProcessError's str() omits stderr, but we captured it — surface
+        # it so a failed read-tree/add (e.g. missing `initial`) is debuggable.
+        stderr = getattr(exc, "stderr", None)
+        detail = f"\n{stderr.strip()}" if stderr else ""
+        logger.warning(
+            "Could not build hacker patch for iter %d (%s): %s%s",
+            iteration, app, exc, detail,
+        )
+        return
+    if result.returncode != 0:
+        logger.warning(
+            "git diff returned non-zero for iter %d hacker patch (%s): %s",
+            iteration, app, result.stderr.strip(),
+        )
+        return
+    if not result.stdout.strip():
+        # Hacker made no /app changes (e.g. exploited purely outside /app).
+        return
+    jdir.mkdir(parents=True, exist_ok=True)
+    _atomic_write(jdir / f"iter_{iteration}_hacker.patch", result.stdout)
+
+
 def _render_full_iter(
     iteration: int,
     outcome: str,
@@ -375,6 +447,7 @@ async def append_iter(
     hack_summary: str | None,
     fix_summary: str | None,
     fixer_trial: Path | None = None,
+    hacker_trial: Path | None = None,
     notes: str | None = None,
     failure_detail: str | None = None,
     ledger_model: str | None = None,
@@ -383,9 +456,10 @@ async def append_iter(
 ) -> None:
     """Record one iteration in the journal.
 
-    Writes the full drill-down file and the compact entry, then regenerates
-    `journal.md`. Iff `fix_applied` and `ledger_model` is set, also refreshes
-    `defenses_in_force.md` via an LLM call.
+    Writes the full drill-down file and the compact entry, the fixer patch
+    (``iter_<N>.patch``) and hacker patch (``iter_<N>_hacker.patch``) when their
+    trials are given, then regenerates `journal.md`. Iff `fix_applied` and
+    `ledger_model` is set, also refreshes `defenses_in_force.md` via an LLM call.
 
     ``failure_detail`` is a one-line summary of why the fix was rejected
     (extracted upstream from ``previous_failure``); appears as a prominent
@@ -404,6 +478,7 @@ async def append_iter(
     _atomic_write(jdir / f"iter_{iteration}.md", full)
     _atomic_write(jdir / f"iter_{iteration}_compact.md", compact)
     _write_fixer_patch(jdir, iteration, fixer_trial)
+    _write_hacker_patch(jdir, iteration, hacker_trial)
 
     if fix_applied and ledger_model and hack_summary and fix_summary:
         prior = read_defenses_in_force(task_output_dir)
