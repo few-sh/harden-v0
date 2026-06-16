@@ -155,7 +155,7 @@ async def run_one(trial: dict, args: argparse.Namespace, sem: asyncio.Semaphore)
         trial_dir_str = ""
         try:
             stage_trial_task(args.task_dir, trial["solution"], stage_parent, args.image)
-            reward, trial_dir = await run_oracle_solver(
+            reward, trial_dir, _ = await run_oracle_solver(
                 task_parent_dir=stage_parent,
                 jobs_dir=args.output_dir / "jobs",
                 role=f"replay_{san}",

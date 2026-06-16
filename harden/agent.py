@@ -90,6 +90,87 @@ def _extract_reward(trial_result: TrialResult, kernelbench_mode: bool = False) -
     return rewards.get("reward", 0.0)
 
 
+def _trial_duration_sec(trial_result: TrialResult) -> float | None:
+    """Wall-clock seconds for the trial (started_at → finished_at).
+
+    Harbor records these as the outer trial bounds — covering env build, agent
+    setup/execution, and the verifier — so this is the trial's end-to-end wall
+    clock. Returns None if either bound is missing or the two can't be
+    differenced (e.g. a naive/aware datetime mismatch), so a missing duration
+    never breaks the loop.
+    """
+    started = trial_result.started_at
+    finished = trial_result.finished_at
+    if started is None or finished is None:
+        return None
+    try:
+        return max(0.0, (finished - started).total_seconds())
+    except TypeError:
+        return None
+
+
+def _sum_token_cost(
+    trial_result: TrialResult,
+) -> tuple[int | None, int | None, int | None, float | None]:
+    """Sum (n_input_tokens, n_cache_tokens, n_output_tokens, cost_usd) over the
+    trial's agent context(s).
+
+    Single-step trials carry one ``AgentContext`` on ``agent_result``; multi-step
+    trials leave that None and record one per step under ``step_results``.
+    Aggregate whichever is populated. Self-contained (rather than calling
+    Harbor's ``TrialResult.compute_token_cost_totals``) so it keeps working on
+    Harbor versions that predate that helper. ``n_input_tokens`` already includes
+    cache, matching ``AgentContext`` semantics. Any field Harbor didn't record
+    stays None — notably the oracle solver runs no model, so its trials have
+    timing but no tokens/cost.
+    """
+    if trial_result.agent_result is not None:
+        contexts = [trial_result.agent_result]
+    elif trial_result.step_results:
+        contexts = [
+            sr.agent_result
+            for sr in trial_result.step_results
+            if sr.agent_result is not None
+        ]
+    else:
+        contexts = []
+
+    n_input: int | None = None
+    n_cache: int | None = None
+    n_output: int | None = None
+    cost: float | None = None
+    for ctx in contexts:
+        if ctx.n_input_tokens is not None:
+            n_input = (n_input or 0) + ctx.n_input_tokens
+        if ctx.n_cache_tokens is not None:
+            n_cache = (n_cache or 0) + ctx.n_cache_tokens
+        if ctx.n_output_tokens is not None:
+            n_output = (n_output or 0) + ctx.n_output_tokens
+        if ctx.cost_usd is not None:
+            cost = (cost or 0.0) + ctx.cost_usd
+    return n_input, n_cache, n_output, cost
+
+
+def _trial_stats(trial_result: TrialResult) -> dict:
+    """Per-trial duration + token/cost in result.json's ``stats`` shape.
+
+    ``n_total_tokens`` is input+output (input already includes cache). Fields
+    Harbor didn't record stay None so callers can tell "0" from "unknown".
+    """
+    n_input, n_cache, n_output, cost = _sum_token_cost(trial_result)
+    total: int | None = None
+    if n_input is not None or n_output is not None:
+        total = (n_input or 0) + (n_output or 0)
+    return {
+        "duration_sec": _trial_duration_sec(trial_result),
+        "n_input_tokens": n_input,
+        "n_cache_tokens": n_cache,
+        "n_output_tokens": n_output,
+        "n_total_tokens": total,
+        "cost_usd": cost,
+    }
+
+
 async def run_hacker(
     task_parent_dir: Path,
     model_name: str,
@@ -104,8 +185,13 @@ async def run_hacker(
     force_build: bool = False,
     image_name: str | None = None,
     kernelbench_mode: bool = False,
-) -> tuple[float, Path]:
-    """Run a Terminus-2 hacker agent. Collects /solution for exploit inspection."""
+) -> tuple[float, Path, dict | None]:
+    """Run a Terminus-2 hacker agent. Collects /solution for exploit inspection.
+
+    Returns ``(reward, trial_dir, stats)`` where ``stats`` is the per-trial
+    duration/token/cost dict (see ``_trial_stats``), or None on a job-cache hit
+    whose cached payload predates this field.
+    """
     out = await _run_agent(
         task_parent_dir=task_parent_dir,
         agent_name=AgentName.TERMINUS_2,
@@ -124,7 +210,7 @@ async def run_hacker(
         image_name=image_name,
         kernelbench_mode=kernelbench_mode,
     )
-    return out["reward"], Path(out["trial_dir"])
+    return out["reward"], Path(out["trial_dir"]), out.get("stats")
 
 
 async def run_oracle_solver(
@@ -136,8 +222,12 @@ async def run_oracle_solver(
     force_build: bool = False,
     image_name: str | None = None,
     kernelbench_mode: bool = False,
-) -> tuple[float, Path]:
-    """Run the oracle solver (copies reference.py → solution.py via solve.sh)."""
+) -> tuple[float, Path, dict | None]:
+    """Run the oracle solver (copies reference.py → solution.py via solve.sh).
+
+    Returns ``(reward, trial_dir, stats)``; the oracle runs no model, so the
+    stats dict carries timing but null tokens/cost.
+    """
     out = await _run_agent(
         task_parent_dir=task_parent_dir,
         agent_name=AgentName.ORACLE,
@@ -150,7 +240,7 @@ async def run_oracle_solver(
         image_name=image_name,
         kernelbench_mode=kernelbench_mode,
     )
-    return out["reward"], Path(out["trial_dir"])
+    return out["reward"], Path(out["trial_dir"]), out.get("stats")
 
 
 async def run_solver_agent(
@@ -167,11 +257,12 @@ async def run_solver_agent(
     force_build: bool = False,
     image_name: str | None = None,
     kernelbench_mode: bool = False,
-) -> tuple[float, Path]:
+) -> tuple[float, Path, dict | None]:
     """Run a Terminus-2 solver agent (used as pre-check when cfg.oracle=False).
 
     Verifier enabled — we need the reward signal. Solver may be privileged via
     the workspace layer (prepare_solver_environment injects /solution/ into the image).
+    Returns ``(reward, trial_dir, stats)`` (see ``run_hacker``).
     """
     out = await _run_agent(
         task_parent_dir=task_parent_dir,
@@ -191,7 +282,7 @@ async def run_solver_agent(
         image_name=image_name,
         kernelbench_mode=kernelbench_mode,
     )
-    return out["reward"], Path(out["trial_dir"])
+    return out["reward"], Path(out["trial_dir"]), out.get("stats")
 
 
 async def run_fixer(
@@ -207,8 +298,11 @@ async def run_fixer(
     harbor_config: Path | None = None,
     force_build: bool = False,
     image_name: str | None = None,
-) -> tuple[float, Path]:
-    """Run the fixer agent (verifier disabled — we only care about committed files)."""
+) -> tuple[float, Path, dict | None]:
+    """Run the fixer agent (verifier disabled — we only care about committed files).
+
+    Returns ``(reward, trial_dir, stats)`` (see ``run_hacker``).
+    """
     out = await _run_agent(
         task_parent_dir=task_parent_dir,
         agent_name=AgentName.TERMINUS_2,
@@ -226,7 +320,7 @@ async def run_fixer(
         force_build=force_build,
         image_name=image_name,
     )
-    return out["reward"], Path(out["trial_dir"])
+    return out["reward"], Path(out["trial_dir"]), out.get("stats")
 
 
 def _load_base_config(harbor_config: Path | None) -> JobConfig:
@@ -314,9 +408,10 @@ async def _run_agent(
 
     trial_result = TrialResult.model_validate_json(result_path.read_text())
     reward = _extract_reward(trial_result, kernelbench_mode=kernelbench_mode)
+    stats = _trial_stats(trial_result)
     logger.info("[%s] Completed: reward=%.2f, trial_dir=%s", role, reward, trial_dir)
     _fire_job_finished_hook(trial_dir)
-    return {"reward": reward, "trial_dir": str(trial_dir)}
+    return {"reward": reward, "trial_dir": str(trial_dir), "stats": stats}
 
 
 def _has_verifier_output(trial_dir: Path) -> bool:

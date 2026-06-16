@@ -176,7 +176,7 @@ async def run_trial(
 
         t0 = time.time()
         try:
-            reward, trial_dir = await run_hacker(
+            reward, trial_dir, _ = await run_hacker(
                 task_parent_dir=work_parent,
                 model_name=model,
                 jobs_dir=trial_out / "jobs",

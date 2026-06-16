@@ -198,9 +198,15 @@ async def _run_targeted_replay(
     harden_image: str,
     iteration: int,
     hack_iteration: int,
-) -> float:
-    """Up to cfg.replay_retries attempts; returns max reward observed."""
+) -> tuple[float, dict]:
+    """Up to cfg.replay_retries attempts.
+
+    Returns ``(best_reward, stats)`` — the max reward observed and a stats
+    accumulator summing every replay attempt's duration/token/cost (each
+    attempt is its own Harbor trial).
+    """
     best = 0.0
+    replay_stats = _new_stats()
     journal_text = journal.read_compact(cfg.task_output_dir) if cfg.journal_enabled else None
     for attempt in range(cfg.replay_retries):
         replay_parent = create_working_copy(hardened_task_dir, output / f"replay_task_iter{iteration}")
@@ -220,7 +226,7 @@ async def _run_targeted_replay(
         if cfg.journal_enabled:
             prepare_journal_mount(replay_parent, cfg.task_id, cfg.task_output_dir)
 
-        reward, _ = await run_hacker(
+        reward, _, stats = await run_hacker(
             replay_parent, cfg.hacker_model, cfg.jobs_dir,
             role=f"replay_h{hack_iteration}_a{attempt}",
             max_turns=cfg.hacker_max_turns,
@@ -234,12 +240,13 @@ async def _run_targeted_replay(
             image_name=harden_image,
             kernelbench_mode=cfg.kernelbench_mode,
         )
+        _add_trial_stats(replay_stats, stats)
         best = max(best, reward)
         logger.info("Replay %d/%d: reward=%.2f (threshold=%.2f).",
                     attempt + 1, cfg.replay_retries, reward, cfg.hack_threshold)
         if reward >= cfg.hack_threshold:
-            return best
-    return best
+            return best, replay_stats
+    return best, replay_stats
 
 
 def _resolve_image_name(cfg: HardenConfig) -> str | None:
@@ -255,8 +262,11 @@ async def _run_solver(
     role: str,
     force_build: bool,
     image_name: str | None,
-) -> tuple[float, Path]:
-    """Dispatch pre-check / validation to oracle or solver agent based on cfg.oracle."""
+) -> tuple[float, Path, dict | None]:
+    """Dispatch pre-check / validation to oracle or solver agent based on cfg.oracle.
+
+    Propagates the chosen runner's ``(reward, trial_dir, stats)`` triple.
+    """
     fallback = _resolve_image_name(cfg)
     if cfg.oracle:
         return await run_oracle_solver(
@@ -296,6 +306,58 @@ def _validate_task_dir(task_dir: Path) -> None:
         raise FileNotFoundError(
             f"Task {task_dir.name} missing required files: {missing}"
         )
+
+
+# ── Per-iteration + run-total cost/duration accounting ──────────────────────
+# Every Harbor agent trial (hacker/fixer/solver/replay) reports its wall-clock
+# duration and token/cost in its own result.json; the loop folds those into a
+# per-iteration ``stats`` block (on each iter_info) and a run-level ``totals``
+# block, with precheck kept separate (``precheck_stats``) so the invariant
+# totals == precheck + Σ iterations stays auditable. LLM trajectory summaries
+# go through litellm directly (not Harbor trials), so they're not counted here.
+_STATS_SUM_FIELDS = (
+    "duration_sec",
+    "n_input_tokens",
+    "n_cache_tokens",
+    "n_output_tokens",
+    "cost_usd",
+)
+
+
+def _new_stats() -> dict:
+    return {
+        "duration_sec": 0.0,
+        "n_input_tokens": 0,
+        "n_cache_tokens": 0,
+        "n_output_tokens": 0,
+        "n_total_tokens": 0,
+        "cost_usd": 0.0,
+        "n_trials": 0,
+    }
+
+
+def _add_trial_stats(acc: dict, stats: dict | None) -> None:
+    """Fold one trial's stats (from a run_* helper) into a running accumulator.
+
+    ``stats`` is None only when a trial's cached ``_run_agent`` payload predates
+    this field (a resumed run hitting an old job cache) — skip those so we never
+    invent zeros. Per-field Nones (e.g. the oracle solver's token/cost) are
+    skipped too, but ``n_trials`` still counts the trial.
+    """
+    if not stats:
+        return
+    acc["n_trials"] += 1
+    for field in _STATS_SUM_FIELDS:
+        value = stats.get(field)
+        if value is not None:
+            acc[field] += value
+    acc["n_total_tokens"] = acc["n_input_tokens"] + acc["n_output_tokens"]
+
+
+def _fold_stats(stats: dict | None, *accumulators: dict) -> None:
+    """Fold one trial's stats into several accumulators at once (iter + totals)."""
+    for acc in accumulators:
+        _add_trial_stats(acc, stats)
 
 
 def _save_result(path: Path, result: dict) -> None:
@@ -362,6 +424,14 @@ async def _harden_task_phases(
     output = config.task_output_dir
     output.mkdir(parents=True, exist_ok=True)
 
+    # Cost/duration accumulators. These dicts are mutated in place as trials
+    # complete and are referenced (not copied) by `result`, so every incremental
+    # _save_result re-serializes their current totals. `run_totals` covers the
+    # whole run (precheck + all iterations); `precheck_stats` is split out so the
+    # totals == precheck + Σ iterations[].stats relationship stays visible.
+    run_totals = _new_stats()
+    precheck_stats = _new_stats()
+
     result: dict = {
         "task_id": config.task_id,
         "status": "unknown",
@@ -369,6 +439,8 @@ async def _harden_task_phases(
         "oracle": config.oracle,
         "pool_enabled": pooled,
         "kernelbench_mode": config.kernelbench_mode,
+        "precheck_stats": precheck_stats,
+        "totals": run_totals,
     }
     # Persist the skeleton immediately. A single iteration can run for an hour,
     # so a run interrupted before its first post-iteration save (Ctrl-C, CI
@@ -421,13 +493,14 @@ async def _harden_task_phases(
         async with semaphore:
             for attempt in range(precheck_retries):
                 logger.info("Pre-check attempt %d/%d (oracle=%s)", attempt + 1, precheck_retries, config.oracle)
-                reward, _precheck_trial = await _run_solver(
+                reward, _precheck_trial, _pc_stats = await _run_solver(
                     config,
                     solver_parent,
                     role=f"solver_precheck_a{attempt}",
                     force_build=precheck_modified,
                     image_name=harden_image if precheck_modified else None,
                 )
+                _fold_stats(_pc_stats, precheck_stats, run_totals)
                 if reward >= config.solver_threshold:
                     precheck_passed = True
                     break
@@ -484,12 +557,16 @@ async def _harden_task_phases(
 
     while hack_iterations < config.max_iterations:
         iteration += 1
+        # Fresh per-iteration accumulator, referenced by iter_info (so saves
+        # reflect it live) and folded into run_totals alongside each trial.
+        iter_stats = _new_stats()
         iter_info: dict = {
             "iteration": iteration,
             "hack_reward": None,
             "fix_applied": False,
             "replay_attempted": False,
             "replay_reward": None,
+            "stats": iter_stats,
         }
         logger.info("=== Iteration %d ===", iteration)
 
@@ -596,7 +673,7 @@ async def _harden_task_phases(
                         or journal_modified or patch_capture_modified
                     )
                     hacker_needs_rebuild = hacker_dockerfile_modified or hardened_dirty
-                    hack_reward, hacker_trial = await run_hacker(
+                    hack_reward, hacker_trial, _hack_stats = await run_hacker(
                         hacker_parent,
                         config.hacker_model,
                         config.jobs_dir,
@@ -611,6 +688,7 @@ async def _harden_task_phases(
                         image_name=harden_image if hacker_needs_rebuild else _resolve_image_name(config),
                         kernelbench_mode=config.kernelbench_mode,
                     )
+                    _fold_stats(_hack_stats, iter_stats, run_totals)
                     if hacker_privileged_modified:
                         privileged_hack_ran = True
                     if hack_reward >= config.hack_threshold:
@@ -731,7 +809,7 @@ async def _harden_task_phases(
         )
         # Fixer always modifies the Dockerfile → force_build with harden image.
         async with semaphore:
-            _, fixer_trial = await run_fixer(
+            _, fixer_trial, _fix_stats = await run_fixer(
                 fixer_parent,
                 config.fixer_model,
                 config.jobs_dir,
@@ -745,6 +823,7 @@ async def _harden_task_phases(
                 force_build=True,
                 image_name=harden_image,
             )
+        _fold_stats(_fix_stats, iter_stats, run_totals)
 
         # ── VALIDATE + REPLAY PHASE ───────────────────────────────────────────
         fix_applied = False
@@ -862,13 +941,14 @@ async def _harden_task_phases(
                     else f"solver_validate_h{hack_iterations - 1}"
                 )
                 async with semaphore:
-                    solver_reward, solver_trial = await _run_solver(
+                    solver_reward, solver_trial, _sv_stats = await _run_solver(
                         config,
                         solver_parent,
                         role=solver_validate_role,
                         force_build=solver_needs_rebuild,
                         image_name=harden_image if solver_needs_rebuild else None,
                     )
+                _fold_stats(_sv_stats, iter_stats, run_totals)
 
                 if solver_reward >= config.solver_threshold:
                     logger.info("Fix validated — solver passes (reward=%.2f).", solver_reward)
@@ -880,11 +960,12 @@ async def _harden_task_phases(
                     if config.replay_enabled and not pool_advanced:
                         iter_info["replay_attempted"] = True
                         async with semaphore:
-                            replay_reward = await _run_targeted_replay(
+                            replay_reward, _replay_stats = await _run_targeted_replay(
                                 config, hardened_task_dir, fixer_trial, hack_summary,
                                 original_instruction, output, harden_image, iteration,
                                 hack_iteration=hack_iterations - 1,
                             )
+                        _fold_stats(_replay_stats, iter_stats, run_totals)
                         iter_info["replay_reward"] = replay_reward
 
                     if replay_reward is not None and replay_reward >= config.hack_threshold:
