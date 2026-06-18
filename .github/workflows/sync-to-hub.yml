@@ -1,0 +1,30 @@
+name: Sync to Hugging Face Hub
+
+# Mirrors this repo's tracked files to https://huggingface.co/IvgeniSegal/harden-v0
+# on every push to main. Powered by Hugging Face's official hub-sync action, which
+# uploads file contents via the `hf` CLI (it auto-creates the HF repo on first run,
+# mirrors deletions, and excludes .git/ and .github/).
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+# Never let two syncs run at once; the most recent push wins.
+concurrency:
+  group: hf-sync
+  cancel-in-progress: true
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Sync to Hugging Face Hub
+        uses: huggingface/hub-sync@v0.2.0
+        with:
+          github_repo_id: ${{ github.repository }}
+          huggingface_repo_id: IvgeniSegal/harden-v0
+          hf_token: ${{ secrets.HF_TOKEN }}
+          repo_type: model
+          private: 'false'
